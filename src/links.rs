@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, Eq, Copy)]
-pub(crate) struct LinkPos {
-    pub(crate) row: usize,
-    pub(crate) col: usize,
+pub struct LinkPos {
+    pub row: usize,
+    pub col: usize,
 }
 
 impl PartialEq for LinkPos {
@@ -36,13 +36,14 @@ impl LinkPos {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct Link {
-    pub(crate) start: LinkPos,
-    pub(crate) end: LinkPos,
+pub struct Link {
+    pub id: usize,
+    pub start: LinkPos,
+    pub end: LinkPos,
 }
 
 impl Link {
-    pub(crate) fn new(start: LinkPos, end: LinkPos) -> Self {
-        Self { start, end }
+    pub(crate) fn new(id: usize, start: LinkPos, end: LinkPos) -> Self {
+        Self { id, start, end }
     }
 }
