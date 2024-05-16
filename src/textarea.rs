@@ -2,7 +2,7 @@ use crate::cursor::CursorMove;
 use crate::highlight::LineHighlighter;
 use crate::history::{Edit, EditKind, History};
 use crate::input::{Input, Key};
-use crate::links::{Link, LinkPos};
+use crate::links::Link;
 use crate::ratatui::layout::Alignment;
 use crate::ratatui::style::{Color, Modifier, Style};
 use crate::ratatui::widgets::{Block, Widget};
@@ -81,8 +81,9 @@ pub struct TextArea<'a> {
     block: Option<Block<'a>>,
     style: Style,
     cursor: (usize, usize), // 0-base
-    links: Vec<Link>,
-    pending_link: Option<LinkPos>,
+    pub links: Vec<Link>,
+    pending_link: Option<usize>,
+    pub next_link_id: usize,
     tab_len: u8,
     hard_tab_indent: bool,
     history: History,
@@ -191,6 +192,7 @@ impl<'a> TextArea<'a> {
             cursor: (0, 0),
             links: Vec::new(),
             pending_link: None,
+            next_link_id: 0,
             tab_len: 4,
             hard_tab_indent: false,
             history: History::new(50),
@@ -741,16 +743,7 @@ impl<'a> TextArea<'a> {
         }
 
         if c == '[' || c == ']' {
-            match self.pending_link {
-                Some(pos) => {
-                    let other = LinkPos::new(self.cursor());
-                    let (start, end) = pos.order_positions(other);
-                    let new_link = Link::new(start, end);
-                    self.links.push(new_link);
-                    self.pending_link = None;
-                }
-                None => self.pending_link = Some(LinkPos::new(self.cursor())),
-            }
+            self.insert_link(c);
         }
 
         self.delete_selection(false);
@@ -768,6 +761,20 @@ impl<'a> TextArea<'a> {
             Pos::new(row, col, i),
             i + c.len_utf8(),
         );
+    }
+
+    pub fn insert_link(&mut self, c: char) {
+        match self.pending_link {
+            Some(pos) => {
+                let other_pos = self.cursor.1;
+                let (start, end) = (pos.min(other_pos), pos.max(other_pos));
+                let new_link = Link::new(self.next_link_id, self.cursor.0, start, end);
+                self.links.push(new_link);
+                self.next_link_id += 1;
+                self.pending_link = None;
+            }
+            None => self.pending_link = Some(self.cursor.1),
+        }
     }
 
     /// Insert a string at current cursor position. This method returns if some text was inserted or not in the textarea.
@@ -1066,6 +1073,7 @@ impl<'a> TextArea<'a> {
         self.delete_selection(false);
 
         let (row, col) = self.cursor;
+
         let line = &mut self.lines[row];
         let offset = line
             .char_indices()
@@ -1600,20 +1608,31 @@ impl<'a> TextArea<'a> {
             hl.search(matches, self.search.style);
         }
 
-        if self.links.len() > 0
-            && self
-                .links
-                .iter()
-                .any(|link| link.start.row == row || link.end.row == row)
-        {
-            hl.links(self.links.clone(), self.link_style);
-        }
+        hl.links(&self.links, row, self.link_style);
 
         if let Some((start, end)) = self.selection_range() {
             hl.selection(row, start.row, start.offset, end.row, end.offset);
         }
 
         hl.into_spans()
+    }
+
+    // returns: link.id if cursor is currently inside a link
+    pub fn in_link(&self, cpos: (usize, usize)) -> Option<usize> {
+        for link in self.links.iter() {
+            // No links on cursor row
+            if cpos.0 != link.row {
+                continue;
+            } else {
+                if cpos.1 >= link.start_col && cpos.1 <= link.end_col {
+                    return Some(link.id);
+                } else {
+                    continue;
+                }
+            }
+        }
+        // No links
+        return None;
     }
 
     /// Build a ratatui (or tui-rs) widget to render the current state of the textarea. The widget instance returned
