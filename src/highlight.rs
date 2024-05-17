@@ -164,12 +164,12 @@ impl<'a> LineHighlighter<'a> {
         }
     }
 
-    pub fn links(&mut self, links: Vec<Link>, style: Style) {
+    pub fn links(&mut self, links: &Vec<Link>, row: usize, style: Style) {
         for link in links {
-            if link.start.row == link.end.row {
+            if link.row == row {
                 self.boundaries
-                    .push((Boundary::Link(style), link.start.col));
-                self.boundaries.push((Boundary::End, link.end.col + 1));
+                    .push((Boundary::Link(style), link.start_col));
+                self.boundaries.push((Boundary::End, link.end_col + 1));
             }
         }
     }
