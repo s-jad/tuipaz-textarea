@@ -129,7 +129,10 @@ where
     I::Item: Into<String>,
 {
     fn from(i: I) -> Self {
-        Self::new(i.into_iter().map(|s| s.into()).collect::<Vec<String>>())
+        Self::new(
+            i.into_iter().map(|s| s.into()).collect::<Vec<String>>(),
+            vec![],
+        )
     }
 }
 
@@ -166,7 +169,7 @@ impl<'a, S: Into<String>> FromIterator<S> for TextArea<'a> {
 /// ```
 impl<'a> Default for TextArea<'a> {
     fn default() -> Self {
-        Self::new(vec![String::new()])
+        Self::new(vec![String::new()], vec![])
     }
 }
 
@@ -180,7 +183,7 @@ impl<'a> TextArea<'a> {
     /// let textarea = TextArea::new(lines);
     /// assert_eq!(textarea.lines(), ["hello", "...", "goodbye"]);
     /// ```
-    pub fn new(mut lines: Vec<String>) -> Self {
+    pub fn new(mut lines: Vec<String>, links: Vec<Link>) -> Self {
         if lines.is_empty() {
             lines.push(String::new());
         }
@@ -190,7 +193,7 @@ impl<'a> TextArea<'a> {
             block: None,
             style: Style::default(),
             cursor: (0, 0),
-            links: Vec::new(),
+            links,
             pending_link: None,
             next_link_id: 0,
             tab_len: 4,
@@ -763,6 +766,18 @@ impl<'a> TextArea<'a> {
         );
     }
 
+    /// insert_link inserts a link at the current cursor position in the `TextArea`.
+    /// Links are identified by unique IDs and span across one or more characters,
+    /// but can't currently span multiple lines
+    ///
+    /// # Behavior
+    ///
+    ///  - pending_link = None` -> sets `pending_link` to the current cursor position
+    ///    and marks the start of a new link insertion.
+    ///  - pending_link` = Some(position) -> calculates the range between the stored `pending_link` position
+    ///   and the current cursor position, creates a new `Link` object with these positions,
+    ///   adds it to the `links` vector, increments the `next_link_id`, and resets `pending_link` to `None`.
+    ///
     pub fn insert_link(&mut self, c: char) {
         match self.pending_link {
             Some(pos) => {
@@ -1617,7 +1632,16 @@ impl<'a> TextArea<'a> {
         hl.into_spans()
     }
 
-    // returns: link.id if cursor is currently inside a link
+    /// in_link checks if the cursor's current position (`cpos`) falls within any of the defined links in the `TextArea`.
+    /// It returns the ID of the link if the cursor is inside a link; otherwise, it returns `None`.
+    ///
+    /// # Arguments
+    ///  - `cpos` -> A tuple containing the row and column indices of the cursor's current position.
+    ///
+    /// # Returns
+    ///  - Some(id) -> ID of the link if the cursor is inside a links
+    ///  - None -> if the cursor is not inside a link.
+    ///
     pub fn in_link(&self, cpos: (usize, usize)) -> Option<usize> {
         for link in self.links.iter() {
             // No links on cursor row
