@@ -16,3 +16,9 @@ impl Link {
         }
     }
 }
+
+impl PartialEq for Link {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
