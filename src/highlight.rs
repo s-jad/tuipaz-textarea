@@ -26,10 +26,10 @@ impl Boundary {
         fn rank(b: &Boundary) -> u8 {
             match b {
                 Boundary::Cursor(_) => 4,
-                Boundary::Link(_) => 3,
                 #[cfg(feature = "search")]
-                Boundary::Search(_) => 2,
-                Boundary::Select(_) => 1,
+                Boundary::Search(_) => 3,
+                Boundary::Select(_) => 2,
+                Boundary::Link(_) => 1,
                 Boundary::End => 0,
             }
         }
