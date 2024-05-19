@@ -82,8 +82,10 @@ pub struct TextArea<'a> {
     style: Style,
     cursor: (usize, usize), // 0-base
     pub links: Vec<Link>,
-    pending_link: Option<usize>,
+    pending_link: Option<(usize, usize, char)>,
     pub next_link_id: usize,
+    pub new_link: bool,
+    pub deleted_link_ids: Vec<(usize, usize)>,
     tab_len: u8,
     hard_tab_indent: bool,
     history: History,
@@ -196,6 +198,8 @@ impl<'a> TextArea<'a> {
             links,
             pending_link: None,
             next_link_id: 0,
+            new_link: false,
+            deleted_link_ids: vec![],
             tab_len: 4,
             hard_tab_indent: false,
             history: History::new(50),
@@ -743,9 +747,7 @@ impl<'a> TextArea<'a> {
         if c == '\n' || c == '\r' {
             self.insert_newline();
             return;
-        }
-
-        if c == '[' || c == ']' {
+        } else if c == '[' || c == ']' {
             self.insert_link(c);
         }
 
@@ -772,24 +774,44 @@ impl<'a> TextArea<'a> {
     ///
     /// # Behavior
     ///
-    ///  - pending_link = None` -> sets `pending_link` to the current cursor position
-    ///    and marks the start of a new link insertion.
+    ///  - pending_link = None` -> save cursor pos and char in self.pending_link
     ///  - pending_link` = Some(position) -> calculates the range between the stored `pending_link` position
     ///   and the current cursor position, creates a new `Link` object with these positions,
     ///   adds it to the `links` vector, increments the `next_link_id`, and resets `pending_link` to `None`.
     ///
     pub fn insert_link(&mut self, c: char) {
         match self.pending_link {
-            Some(pos) => {
-                let other_pos = self.cursor.1;
-                let (start, end) = (pos.min(other_pos), pos.max(other_pos));
-                let new_link = Link::new(self.next_link_id, self.cursor.0, start, end);
-                self.links.push(new_link);
-                self.next_link_id += 1;
-                self.pending_link = None;
+            Some(link) => {
+                // If already link pending
+                let prev_pos = (link.0, link.1);
+                let prev_c = link.2;
+                let pos = self.cursor;
+
+                if prev_c == c || prev_pos == pos || prev_pos.0 != pos.0 {
+                    // If double '[' or ']' || same position || different row -> reset self.pending_link
+                    self.pending_link = Some((self.cursor.0, self.cursor.1, c));
+                } else if (prev_c == '[' && c == ']' && prev_pos.1 > pos.1)
+                    || (prev_c == ']' && c == '[' && prev_pos.1 < pos.1)
+                {
+                    // If incorrect bracket order -> reset self.pending_link
+                    self.pending_link = Some((self.cursor.0, self.cursor.1, c));
+                } else {
+                    // Otherwise create link and push to self.links
+                    let (start, end) = (pos.1.min(prev_pos.1), pos.1.max(prev_pos.1));
+                    let new_link = Link::new(self.next_link_id, self.cursor.0, start, end);
+                    self.links.push(new_link);
+                    self.next_link_id += 1;
+                    self.pending_link = None;
+                    self.new_link = true;
+                }
             }
-            None => self.pending_link = Some(self.cursor.1),
+            None => self.pending_link = Some((self.cursor.0, self.cursor.1, c)),
         }
+    }
+
+    pub fn delete_link(&mut self, (idx, link_id): (usize, usize)) {
+        self.deleted_link_ids.push((idx, link_id));
+        self.links.remove(idx);
     }
 
     /// Insert a string at current cursor position. This method returns if some text was inserted or not in the textarea.
@@ -1152,6 +1174,20 @@ impl<'a> TextArea<'a> {
         }
 
         let (row, col) = self.cursor;
+
+        let delete_pos = match col {
+            0 => {
+                let row_up = row - 1;
+                let end_col_up = self.lines[row_up].len();
+                (row_up, end_col_up)
+            }
+            _ => (row, col - 1),
+        };
+
+        if let Some(link) = self.in_link(delete_pos) {
+            self.delete_link(link);
+        }
+
         if col == 0 {
             return self.delete_newline();
         }
@@ -1266,8 +1302,10 @@ impl<'a> TextArea<'a> {
         if self.delete_selection(false) {
             return true;
         }
+
         let (r, c) = self.cursor;
         if let Some(col) = find_word_start_backward(&self.lines[r], c) {
+            self.delete_links_in_range((r, c), (r, col - c));
             self.delete_piece(col, c - col)
         } else if c > 0 {
             self.delete_piece(0, c)
@@ -1296,9 +1334,11 @@ impl<'a> TextArea<'a> {
         if self.delete_selection(false) {
             return true;
         }
+
         let (r, c) = self.cursor;
         let line = &self.lines[r];
         if let Some(col) = find_word_end_forward(line, c) {
+            self.delete_links_in_range((r, c), (r, col - c));
             self.delete_piece(c, col - c)
         } else {
             let end_col = line.chars().count();
@@ -1521,6 +1561,7 @@ impl<'a> TextArea<'a> {
 
     fn delete_selection(&mut self, should_yank: bool) -> bool {
         if let Some((s, e)) = self.take_selection_range() {
+            self.delete_links_in_range((s.row, s.col), (e.row, e.col));
             self.delete_range(s, e, should_yank);
             return true;
         }
@@ -1642,14 +1683,14 @@ impl<'a> TextArea<'a> {
     ///  - Some(id) -> ID of the link if the cursor is inside a links
     ///  - None -> if the cursor is not inside a link.
     ///
-    pub fn in_link(&self, cpos: (usize, usize)) -> Option<usize> {
-        for link in self.links.iter() {
+    pub fn in_link(&self, cpos: (usize, usize)) -> Option<(usize, usize)> {
+        for (idx, link) in self.links.iter().enumerate() {
             // No links on cursor row
             if cpos.0 != link.row {
                 continue;
             } else {
                 if cpos.1 >= link.start_col && cpos.1 <= link.end_col {
-                    return Some(link.id);
+                    return Some((idx, link.id));
                 } else {
                     continue;
                 }
@@ -1657,6 +1698,25 @@ impl<'a> TextArea<'a> {
         }
         // No links
         return None;
+    }
+
+    pub fn delete_links_in_range(&mut self, start: (usize, usize), end: (usize, usize)) {
+        for (idx, link) in self.links.clone().iter().enumerate() {
+            // If link not found between start.row and end.row -> continue
+            if link.row < start.0 || link.row > end.0 {
+                continue;
+            // If deletion occurs on a single row and link.end_col occurs after start.col
+            // or link.start_col occurs before end.col -> delete link
+            } else if start.0 == end.0 && (link.end_col >= start.1 || link.start_col <= end.1) {
+                self.delete_link((idx, link.id));
+            // if deletion occurs on multiple rows && link.start_col
+            // or link.end_col occur within that range -> delete link
+            } else if (link.row == start.0 && link.end_col >= start.1)
+                || (link.row == end.0 && link.start_col <= end.1)
+            {
+                self.delete_link((idx, link.id));
+            }
+        }
     }
 
     /// Build a ratatui (or tui-rs) widget to render the current state of the textarea. The widget instance returned
