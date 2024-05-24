@@ -6,12 +6,11 @@ use crate::util::{num_digits, spaces};
 use ratatui::text::Line;
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::iter;
-#[cfg(feature = "tuirs")]
-use tui::text::Spans as Line;
 use unicode_width::UnicodeWidthChar as _;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq, Clone)]
 enum Boundary {
     Cursor(Style),
     Link(Style),
@@ -164,8 +163,8 @@ impl<'a> LineHighlighter<'a> {
         }
     }
 
-    pub fn links(&mut self, links: &Vec<Link>, row: usize, style: Style) {
-        for link in links {
+    pub fn links(&mut self, links: &HashMap<usize, Link>, row: usize, style: Style) {
+        for link in links.values() {
             if link.row == row {
                 self.boundaries
                     .push((Boundary::Link(style), link.start_col));
@@ -246,7 +245,7 @@ impl<'a> LineHighlighter<'a> {
             if start < end {
                 spans.push(Span::styled(builder.build(&line[start..end]), style));
             }
-
+            
             style = if let Some(s) = next_boundary.style() {
                 stack.push(style);
                 s
