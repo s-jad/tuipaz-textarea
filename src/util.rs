@@ -19,3 +19,11 @@ impl Pos {
         Self { row, col, offset }
     }
 }
+
+pub(crate) fn log_format<T: std::fmt::Debug>(data: &T, prefix: &str) -> String {
+    let mut s = String::new();
+    s.push_str(prefix);
+    s.push_str(": ");
+    s.push_str(&format!("{:?}", data));
+    s
+}
