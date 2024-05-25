@@ -1,3 +1,5 @@
+use log::info;
+
 use crate::cursor::CursorMove;
 use crate::highlight::LineHighlighter;
 use crate::history::{Edit, EditKind, History};
@@ -9,7 +11,7 @@ use crate::ratatui::widgets::{Block, Widget};
 use crate::scroll::Scrolling;
 #[cfg(feature = "search")]
 use crate::search::Search;
-use crate::util::{spaces, Pos};
+use crate::util::{spaces, Pos, log_format};
 use crate::widget::{Renderer, Viewport};
 use crate::word::{find_word_end_forward, find_word_start_backward};
 use ratatui::text::Line;
@@ -187,7 +189,7 @@ impl<'a> TextArea<'a> {
         if lines.is_empty() {
             lines.push(String::new());
         }
-
+        
         Self {
             lines,
             block: None,
@@ -1016,6 +1018,11 @@ impl<'a> TextArea<'a> {
         if let Some((i, _)) = line.char_indices().nth(col) {
             let (bytes, chars) = bytes_and_chars(chars, &line[i..]);
             let removed = line.drain(i..i + bytes).as_str().to_string();
+            
+            self.delete_links_in_range((row, col), (row, col + chars));
+            if let Some((link_ids, shift)) = self.links_after_event((row, col), (row - 1, col)) {
+                self.shift_links(link_ids, shift);
+            }
 
             self.cursor = (row, col);
             self.push_history(
@@ -1090,6 +1097,8 @@ impl<'a> TextArea<'a> {
         line.truncate(offset);
 
         self.lines.insert(row + 1, next_line);
+        self.shift_links_newline(self.cursor, 1);
+
         self.cursor = (row + 1, 0);
         self.push_history(EditKind::InsertNewline, Pos::new(row, col, offset), 0);
     }
@@ -1224,18 +1233,14 @@ impl<'a> TextArea<'a> {
         if self.delete_selection(false) {
             return true;
         }
-        if self.delete_piece(self.cursor.1, usize::MAX) {
-            let (row, col) = self.cursor;
-            self.delete_links_in_range((row, col), (row, usize::MAX));
-            if let Some((link_ids, shift)) = self.links_after_event((row, col), (row.saturating_sub(1), usize::MAX)) {
-                self.shift_links(link_ids, shift);
-            }
+
+        let (row, col) = self.cursor;
+        if self.delete_piece(col, usize::MAX) {
             return true;
         }
         
-        let (row, col) = self.cursor;
-        self.delete_links_in_range((row, col), (row, col + 1));
-        if let Some((link_ids, shift)) = self.links_after_event((row, col), (row, col + 1)) {
+        self.delete_links_in_range((row, col), (row, col));
+        if let Some((link_ids, shift)) = self.links_after_event((row, col), (row, col)) {
             self.shift_links(link_ids, shift);
         }
         self.delete_next_char() // At the end of the line. Try to delete next line
@@ -1772,9 +1777,26 @@ impl<'a> TextArea<'a> {
     pub fn shift_links(&mut self, link_ids: Vec<usize>, shift: (i64, i64)) {
         for id in link_ids.iter() {
             let l = self.links.get_mut(id).expect("Link should exist");
+            info!("{}", log_format(&l, "link before shift"));
             l.start_col = (l.start_col as i64 + shift.1) as usize;
             l.end_col = (l.end_col as i64 + shift.1) as usize;
-            l.row = (l.row as i64 + shift.0) as usize;
+            l.row = match (l.row as i64 + shift.0) as usize {
+                std::usize::MAX => 0,
+                n => n,
+            };
+            info!("{}", log_format(&l, "link after shift"));
+            
+        }
+    }
+
+    pub fn shift_links_newline(&mut self, (row, col): (usize, usize), shift: i64) {
+        for l in self.links.values_mut() {
+            if l.row > row || (l.row == row && l.start_col >= col) {
+                l.row = match (l.row as i64 + shift) as usize {
+                    std::usize::MAX => 0,
+                    n => n, 
+                }
+            }
         }
     }
 
