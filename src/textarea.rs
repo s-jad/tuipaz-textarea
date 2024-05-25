@@ -258,6 +258,7 @@ impl<'a> TextArea<'a> {
     /// ```
     pub fn input(&mut self, input: impl Into<Input>) -> bool {
         let input = input.into();
+        info!("INPUT{}", log_format(&input, ""));
         let modified = match input {
             Input {
                 key: Key::Char('m'),
@@ -753,11 +754,7 @@ impl<'a> TextArea<'a> {
 
         self.delete_selection(false);
         let (row, col) = self.cursor;
-
-        if let Some((link_ids, shift)) = self.links_after_event((row, col), (row, col + 1)) {
-            self.shift_links(link_ids, shift);
-            
-        }
+        self.shift_links_same_row(row, (col, col + 1));
 
         let line = &mut self.lines[row];
         let i = line
@@ -819,16 +816,12 @@ impl<'a> TextArea<'a> {
             chunk[chunk.len() - 1].chars().count(),
         );
         self.cursor = (new_row, new_col);
+        self.shift_links((row, col), (new_row, new_col));
 
         let end_offset = chunk.last().unwrap().len();
 
         let edit = EditKind::InsertChunk(chunk);
         edit.apply(&mut self.lines, &before, &Pos::new(new_row, new_col, end_offset));
-        
-        
-        if let Some((link_ids, shift)) = self.links_after_event((row, col), (new_row, new_col)) {
-            self.shift_links(link_ids, shift);
-        }
 
         self.push_history(edit, before, end_offset);
         true
@@ -857,9 +850,7 @@ impl<'a> TextArea<'a> {
 
         self.cursor.1 += s.chars().count();
         
-        if let Some((link_ids, shift)) = self.links_after_event((row, col), (row, self.cursor.1)) {
-            self.shift_links(link_ids, shift);
-        }
+        self.shift_links((row, col), (row, self.cursor.1));
 
         self.push_history(EditKind::InsertStr(s), Pos::new(row, col, i), end_offset);
         true
@@ -1018,11 +1009,19 @@ impl<'a> TextArea<'a> {
         if let Some((i, _)) = line.char_indices().nth(col) {
             let (bytes, chars) = bytes_and_chars(chars, &line[i..]);
             let removed = line.drain(i..i + bytes).as_str().to_string();
-            
+            let line_empty = line.is_empty(); 
+
+            info!("In delete_piece\n");
+            info!("{}", log_format(&line, "line"));
+            info!("{}", log_format(&(row, col, bytes, chars), "(row, col, bytes, chars)"));
             self.delete_links_in_range((row, col), (row, col + chars));
-            if let Some((link_ids, shift)) = self.links_after_event((row, col), (row - 1, col)) {
-                self.shift_links(link_ids, shift);
-            }
+            
+            let start_col = match line_empty {
+                true => col,
+                false => col + chars,
+            };
+
+            self.shift_links((row, start_col), (row, col));
 
             self.cursor = (row, col);
             self.push_history(
@@ -1097,7 +1096,7 @@ impl<'a> TextArea<'a> {
         line.truncate(offset);
 
         self.lines.insert(row + 1, next_line);
-        self.shift_links_newline(self.cursor, 1);
+        self.shift_links_newline(self.cursor);
 
         self.cursor = (row + 1, 0);
         self.push_history(EditKind::InsertNewline, Pos::new(row, col, offset), 0);
@@ -1124,10 +1123,13 @@ impl<'a> TextArea<'a> {
             return false;
         }
 
+       self.shift_links_prevline(self.cursor, self.lines[row].len());
         let line = self.lines.remove(row);
+        info!("{}", log_format(&line, "line"));
         let prev_line = &mut self.lines[row - 1];
+        info!("{}", log_format(&prev_line, "prev_line"));
         let prev_line_end = prev_line.len();
-
+       
         self.cursor = (row - 1, prev_line.chars().count());
         prev_line.push_str(&line);
         self.push_history(EditKind::DeleteNewline, Pos::new(row, 0, 0), prev_line_end);
@@ -1167,9 +1169,7 @@ impl<'a> TextArea<'a> {
             self.delete_link(id);
         }
 
-        if let Some((links, shift)) = self.links_after_event((row, col), delete_pos) {
-            self.shift_links(links, shift);
-        }
+        self.shift_links((row, col), delete_pos);
 
         if col == 0 {
             return self.delete_newline();
@@ -1234,15 +1234,11 @@ impl<'a> TextArea<'a> {
             return true;
         }
 
-        let (row, col) = self.cursor;
+        let (_, col) = self.cursor;
         if self.delete_piece(col, usize::MAX) {
             return true;
         }
         
-        self.delete_links_in_range((row, col), (row, col));
-        if let Some((link_ids, shift)) = self.links_after_event((row, col), (row, col)) {
-            self.shift_links(link_ids, shift);
-        }
         self.delete_next_char() // At the end of the line. Try to delete next line
     }
 
@@ -1295,16 +1291,8 @@ impl<'a> TextArea<'a> {
 
         let (r, start_col) = self.cursor;
         if let Some(end_col) = find_word_start_backward(&self.lines[r], start_col) {
-            self.delete_links_in_range((r, end_col), (r, start_col));
-            if let Some((link_ids, shift)) = self.links_after_event((r, end_col), (r, start_col)) {
-                self.shift_links(link_ids, shift);
-            }
             self.delete_piece(end_col, start_col - end_col)
         } else if start_col > 0 {
-            self.delete_links_in_range((r, 0), (r, start_col));
-            if let Some((link_ids, shift)) = self.links_after_event((r, 0), (r, start_col)) {
-                self.shift_links(link_ids, shift);
-            }
             self.delete_piece(0, start_col)
         } else {
             self.delete_newline()
@@ -1335,18 +1323,10 @@ impl<'a> TextArea<'a> {
         let (r, start_col) = self.cursor;
         let line = &self.lines[r];
         if let Some(end_col) = find_word_end_forward(line, start_col) {
-            self.delete_links_in_range((r, start_col), (r, end_col));
-            if let Some((link_ids, shift)) = self.links_after_event((r, start_col), (r, end_col)) {
-                self.shift_links(link_ids, shift);
-            }
             self.delete_piece(start_col, end_col - start_col)
         } else {
             let end_col = line.chars().count();
             if start_col < end_col {
-                self.delete_links_in_range((r, start_col), (r, end_col));
-                if let Some((link_ids, shift)) = self.links_after_event((r, start_col), (r, end_col)) {
-                    self.shift_links(link_ids, shift);
-                }
                 self.delete_piece(start_col, end_col - start_col)
             } else if r + 1 < self.lines.len() {
                 self.cursor = (r + 1, 0);
@@ -1566,10 +1546,7 @@ impl<'a> TextArea<'a> {
     fn delete_selection(&mut self, should_yank: bool) -> bool {
         if let Some((s, e)) = self.take_selection_range() {
             self.delete_links_in_range((s.row, s.col), (e.row, e.col));
-            
-            if let Some((link_ids, shift)) = self.links_after_event((s.row, s.col), (e.row, e.col)) {
-                self.shift_links(link_ids, shift)
-            }
+            self.shift_links((s.row, s.col), (e.row, e.col));
 
             self.delete_range(s, e, should_yank);
             return true;
@@ -1751,52 +1728,95 @@ impl<'a> TextArea<'a> {
         None
     }
 
-    pub fn links_after_event(
-        &self, 
-        start: (usize, usize), 
-        end: (usize, usize), 
-    ) -> Option<(Vec<usize>, (i64, i64))> {
-        let mut links = vec![];
+    pub fn shift_links_same_row(&mut self, row: usize, (start_col, end_col): (usize, usize)) {
+        let dcol = end_col as i64 - start_col as i64;
 
-        let (drow, dcol) = (end.0 as i64 - start.0 as i64, end.1 as i64 - start.1 as i64);
-
-        for (id, link) in self.links.iter() {
-            if (link.row == end.0 && link.start_col >= start.1) || link.row > end.0 {
-                links.push(*id);
-            } else {
-                continue;
-            }
-        }
-        
-        match links.is_empty() {
-            true => None,
-            false => Some((links, (drow, dcol))),
-        }
-    }
-
-    pub fn shift_links(&mut self, link_ids: Vec<usize>, shift: (i64, i64)) {
-        for id in link_ids.iter() {
-            let l = self.links.get_mut(id).expect("Link should exist");
-            info!("{}", log_format(&l, "link before shift"));
-            l.start_col = (l.start_col as i64 + shift.1) as usize;
-            l.end_col = (l.end_col as i64 + shift.1) as usize;
-            l.row = match (l.row as i64 + shift.0) as usize {
+        for l in self.links.values_mut().filter(|l| l.row == row && l.start_col >= start_col) {
+            l.start_col = match (l.start_col as i64 + dcol) as usize {
                 std::usize::MAX => 0,
-                n => n,
+                n => n
             };
-            info!("{}", log_format(&l, "link after shift"));
-            
+            l.end_col = match (l.end_col as i64 + dcol) as usize {
+                std::usize::MAX => 0,
+                n => n
+            };
         }
     }
 
-    pub fn shift_links_newline(&mut self, (row, col): (usize, usize), shift: i64) {
+    pub fn shift_links(
+        &mut self,
+        (start_row, start_col): (usize, usize),
+        (end_row, end_col): (usize, usize)
+    ) {
+        let drow = end_row as i64 - start_row as i64;
+        let dcol = end_col as i64 - start_col as i64;
+        
+        info!("IN SHIFT LINKS");
+        info!("{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
+        info!("{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
+        info!("{}", log_format(&(drow, dcol), "(drow, dcol)"));
         for l in self.links.values_mut() {
-            if l.row > row || (l.row == row && l.start_col >= col) {
-                l.row = match (l.row as i64 + shift) as usize {
-                    std::usize::MAX => 0,
-                    n => n, 
+            info!("link before shift{}", log_format(&l, ""));
+            if l.row >= end_row {
+                if (l.row == end_row && l.start_col >= end_col)
+                    || (l.row == start_row && end_row != start_row)
+                {
+                    info!("shifting columns");
+                    l.start_col = match (l.start_col as i64 + dcol) as usize {
+                        std::usize::MAX => 0,
+                        n => n
+                    };
+                    l.end_col = match (l.end_col as i64 + dcol) as usize {
+                        std::usize::MAX => 0,
+                        n => n
+                    };
                 }
+
+                l.row = match (l.row as i64 + drow) as usize {
+                    std::usize::MAX => 0,
+                    n => n,
+                }
+            } 
+            info!("link after shift{}", log_format(&l, ""));
+        }
+    }
+
+
+    pub fn shift_links_prevline(
+        &mut self,
+        (row, col): (usize, usize),
+        dcol: usize
+    ) {
+        info!("SHIFT LINKS PREVLINE");
+        for l in self.links.values_mut() {
+            info!("{}", log_format(&l, "l before shift"));
+            info!("{}", log_format(&dcol, "dcol"));
+            info!("{}", log_format(&(row, col), "(row, col)"));
+            if l.row >= row {
+                l.row = l.row.saturating_sub(1);
+                l.start_col += dcol;
+                l.end_col += dcol;
             }
+            info!("{}", log_format(&l, "l after shift"));
+        }
+    }
+
+    pub fn shift_links_newline(
+        &mut self,
+        (row, col): (usize, usize),
+    ) {
+        for l in self.links.values_mut() {
+            info!("SHIFT LINKS NEWLINE");
+            info!("{}", log_format(&l, "l before shift"));
+            info!("{}", log_format(&col, "col"));
+            if l.row > row {
+                l.row = l.row.saturating_add(1);
+            } else if l.row == row && l.start_col >= col {
+                l.row = l.row.saturating_add(1);
+                l.start_col -= col;
+                l.end_col -= col;
+            }
+            info!("{}", log_format(&l, "l after shift"));
         }
     }
 
@@ -1810,6 +1830,7 @@ impl<'a> TextArea<'a> {
             } else if  (link.end_col >= start.1 && link.end_col <= end.1)
                 || (link.start_col >= start.1 && link.start_col <= end.1) 
             {
+                info!("deleting: {}", log_format(&link, ""));
                 self.delete_link(*id);
             }
         }
