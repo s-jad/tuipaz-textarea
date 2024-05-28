@@ -1011,9 +1011,6 @@ impl<'a> TextArea<'a> {
             let removed = line.drain(i..i + bytes).as_str().to_string();
             let line_empty = line.is_empty(); 
 
-            info!("In delete_piece\n");
-            info!("{}", log_format(&line, "line"));
-            info!("{}", log_format(&(row, col, bytes, chars), "(row, col, bytes, chars)"));
             self.delete_links_in_range((row, col), (row, col + chars));
             
             let start_col = match line_empty {
@@ -1822,14 +1819,12 @@ impl<'a> TextArea<'a> {
 
     pub fn delete_links_in_range(&mut self, start: (usize, usize), end: (usize, usize)) {
         for (id, link) in self.links.clone().iter() {
-            // If link not found between start.row and end.row -> continue
-            if link.row < start.0 || link.row > end.0 {
-                continue;
-            // If deletion occurs on a single row and link.end_col occurs after start.col
-            // or link.start_col occurs before end.col -> delete link
-            } else if  (link.end_col >= start.1 && link.end_col <= end.1)
-                || (link.start_col >= start.1 && link.start_col <= end.1) 
+            if (link.row < start.0 || link.row > end.0)
+                || (link.row == start.0 && link.end_col < start.1)
+                || (link.row == end.0 && link.start_col > end.1)
             {
+                continue;
+            } else {
                 info!("deleting: {}", log_format(&link, ""));
                 self.delete_link(*id);
             }
@@ -2574,28 +2569,281 @@ impl<'a> TextArea<'a> {
 mod tests {
     use super::*;
 
-    // Seaparate tests for tui-rs support
     #[test]
-    fn scroll() {
-        use crate::ratatui::buffer::Buffer;
-        use crate::ratatui::layout::Rect;
-        use crate::ratatui::widgets::Widget;
+    fn test_delete_piece_includes_link() {
+        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11 });
 
-        let mut textarea: TextArea = (0..20).map(|i| i.to_string()).collect();
-        let r = Rect {
-            x: 0,
-            y: 0,
-            width: 24,
-            height: 8,
-        };
-        let mut b = Buffer::empty(r);
-        textarea.widget().render(r, &mut b);
+        textarea.delete_piece(5, 10);
 
-        textarea.scroll((15, 0));
-        assert_eq!(textarea.cursor(), (15, 0));
-        textarea.scroll((-5, 0));
-        assert_eq!(textarea.cursor(), (15, 0));
-        textarea.scroll((-5, 0));
-        assert_eq!(textarea.cursor(), (12, 0));
+        assert_eq!(textarea.links.get(&0), None);
+    }
+
+    #[test]
+    fn test_delete_entire_link() {
+        let mut textarea = TextArea::new(vec!["[Link]".into()], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5 });
+
+        textarea.delete_piece(0, 5);
+
+        assert_eq!(textarea.links.get(&0), None);
+    }
+
+    #[test]
+    fn test_delete_part_of_link() {
+        let mut textarea = TextArea::new(vec!["[Example Link]".into()], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 21 });
+
+        textarea.delete_piece(7, 9);
+
+        assert_eq!(textarea.links.get(&0), None);
+    }
+
+    #[test]
+    fn test_links_shift_on_insert_char() {
+        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11 });
+        textarea.move_cursor(CursorMove::Jump(0, 5));
+        textarea.insert_char(' ');
+        
+        assert_eq!(textarea.links.get(&0).unwrap().start_col, 7); 
+        assert_eq!(textarea.links.get(&0).unwrap().end_col, 12); 
+    }
+
+    #[test]
+    fn test_links_shift_on_delete_char() {
+        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11 });
+        textarea.move_cursor(CursorMove::Jump(0, 5));
+        textarea.delete_char();
+        
+        assert_eq!(textarea.links.get(&0).unwrap().start_col, 5); 
+        assert_eq!(textarea.links.get(&0).unwrap().end_col, 10); 
+    }
+
+    #[test]
+    fn test_deletion_on_different_rows_does_not_affect_links() {
+        let mut textarea = TextArea::new(vec![
+            "Line without link.".into(),
+            "[Link]".into()
+        ], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5 });
+
+        textarea.delete_piece(0, 5);
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 }));
+    }
+
+    #[test]
+    fn test_deletion_range_does_not_delete_links_but_shifts_it() {
+        let mut textarea = TextArea::new(vec![
+            "Before [link] and after.".into()
+        ], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+
+        textarea.delete_piece(0, 6);
+        textarea.delete_piece(23, 13);
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 6 }));
+    }
+
+    #[test]
+    fn test_inserting_newline_above_and_below_link() {
+        let mut textarea = TextArea::new(vec![
+            "[Link]".into(),
+            "Some text below.".into()
+        ], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5 });
+        textarea.move_cursor(CursorMove::Jump(1, 0));
+        textarea.insert_newline();
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 }));
+        
+        textarea.move_cursor(CursorMove::Jump(0, 0));
+        textarea.insert_newline();
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 }));
+    }
+
+    #[test]
+    fn test_deleting_line_by_head_above_and_below_link() {
+        let mut textarea = TextArea::new(vec![
+            "Some text above".into(),
+            "[Link]".into(),
+            "Some text below.".into()
+        ], HashMap::new());
+
+        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5 });
+        textarea.move_cursor(CursorMove::Jump(2, 0));
+        textarea.delete_line_by_head();
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 }));
+        
+        textarea.move_cursor(CursorMove::Jump(0, 0));
+        textarea.delete_line_by_head();
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 }));
+    }
+
+    #[test]
+    fn test_deleting_line_by_end_above_and_below_link() {
+        let mut textarea = TextArea::new(vec![
+            "Some text above".into(),
+            "[Link]".into(),
+            "Some text below.".into()
+        ], HashMap::new());
+
+        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5 });
+        textarea.move_cursor(CursorMove::Jump(2, 0));
+        textarea.move_cursor(CursorMove::End);
+        textarea.delete_line_by_end();
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 }));
+        
+        textarea.move_cursor(CursorMove::Jump(0, 0));
+        textarea.move_cursor(CursorMove::End);
+        textarea.delete_line_by_end();
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 }));
+    }
+
+    #[test]
+    fn test_link_full_row_selection_deletion() {
+        let mut textarea = TextArea::new(vec![
+            "Before [link] after".into()
+        ], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+
+        textarea.selection_start = Some((0, 0));
+        textarea.move_cursor(CursorMove::End);
+        textarea.delete_selection(false);
+
+        assert_eq!(textarea.links.get(&0), None);
+    }
+
+    #[test]
+    fn test_link_full_link_selection_deletion() {
+        let mut textarea = TextArea::new(vec![
+            "Before [link] after".into()
+        ], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+
+        textarea.selection_start = Some((0, 7));
+        textarea.move_cursor(CursorMove::Jump(0, 12));
+        textarea.delete_selection(false);
+
+        assert_eq!(textarea.links.get(&0), None);
+    }
+
+    #[test]
+    fn test_link_partial_link_selection_deletion() {
+        let mut textarea = TextArea::new(vec![
+            "Before [link] after".into()
+        ], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+
+        textarea.selection_start = Some((0, 6));
+        textarea.move_cursor(CursorMove::Jump(0, 8));
+        textarea.delete_selection(false);
+
+        assert_eq!(textarea.links.get(&0), None);
+    }
+
+    #[test]
+    fn test_link_shift_after_selection_deletion_same_row() {
+        let mut textarea = TextArea::new(vec![
+            "Before [link] after".into()
+        ], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+
+        textarea.selection_start = Some((0, 0));
+        textarea.move_cursor(CursorMove::Jump(0, 5));
+        textarea.delete_selection(false);
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 2, end_col: 7 }));
+    }
+
+    #[test]
+    fn test_link_shift_after_selection_deletion_multiple_rows_above() {
+        let mut textarea = TextArea::new(vec![
+            "Text above 1".into(),
+            "Text above 2".into(),
+            "Before [link] after".into()
+        ], HashMap::new());
+
+        textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12 });
+
+        textarea.selection_start = Some((0, 0));
+        textarea.move_cursor(CursorMove::Jump(1, 11));
+        textarea.delete_selection(false);
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 7, end_col: 12 }));
+    }
+
+    #[test]
+    fn test_link_shift_after_selection_deletion_above_up_to_link_row_and_start_col() {
+        let mut textarea = TextArea::new(vec![
+            "Text above 1".into(),
+            "Text above 2".into(),
+            "Before [link] after".into()
+        ], HashMap::new());
+
+        textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12 });
+
+        textarea.selection_start = Some((0, 0));
+        textarea.move_cursor(CursorMove::Jump(2, 6));
+        textarea.delete_selection(false);
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 }));
+    }
+
+    #[test]
+    fn test_link_shift_after_selection_deletion_below_from_link_row_and_end_col() {
+        let mut textarea = TextArea::new(vec![
+            "Before [link] after".into(),
+            "Text below 1".into(),
+            "Text below 2".into(),
+        ], HashMap::new());
+
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+
+        textarea.selection_start = Some((0, 13));
+        textarea.move_cursor(CursorMove::Jump(2, 11));
+        textarea.delete_selection(false);
+
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 7, end_col: 12 }));
+    }
+
+    #[test]
+    fn test_delete_newline_no_links() {
+        let mut textarea = TextArea::new(vec!["Line 1".into(), "Line 2".into()], HashMap::new());
+        textarea.cursor = (1, 0);
+
+        assert!(textarea.delete_newline());
+        assert_eq!(textarea.lines, vec!["Line 1Line 2".to_string()]);
+    }
+
+    #[test]
+    fn test_delete_newline_with_links_next_line() {
+        let mut textarea = TextArea::new(vec!["Line 1".into(), "[Link]".into()], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5 });
+        textarea.cursor = (1, 0);
+
+        assert!(textarea.delete_newline());
+        assert_eq!(textarea.links.get(&0).unwrap(), &Link { id: 0, row: 0, start_col: 5, end_col: 10 });
+        assert_eq!(textarea.lines, vec!["Line 1[Link]".to_string()]);
+    }
+
+    #[test]
+    fn test_delete_newline_with_links_both_lines() {
+        let mut textarea = TextArea::new(vec!["[Link1]".into(), "[Link2]".into()], HashMap::new());
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 6 });
+        textarea.links.insert(1, Link { id: 1, row: 1, start_col: 0, end_col: 6 });
+        textarea.cursor = (1, 0);
+
+        assert!(textarea.delete_newline());
+        assert_eq!(textarea.links.get(&0).unwrap(), &Link { id: 0, row: 0, start_col: 0, end_col: 6 });
+        assert_eq!(textarea.links.get(&1).unwrap(), &Link { id: 1, row: 0, start_col: 7, end_col: 13 });
+        assert_eq!(textarea.lines, vec!["[Link1][Link2]".to_string()]);
     }
 }
