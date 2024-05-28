@@ -189,6 +189,11 @@ impl<'a> TextArea<'a> {
         if lines.is_empty() {
             lines.push(String::new());
         }
+
+        let next_link_id = match links.keys().max() {
+            Some(id) => id + 1,
+            None => 0,
+        };
         
         Self {
             lines,
@@ -197,7 +202,7 @@ impl<'a> TextArea<'a> {
             cursor: (0, 0),
             links,
             pending_link: None,
-            next_link_id: 0,
+            next_link_id,
             new_link: false,
             deleted_link_ids: vec![],
             tab_len: 4,
@@ -857,6 +862,7 @@ impl<'a> TextArea<'a> {
     }
 
     fn delete_range(&mut self, start: Pos, end: Pos, should_yank: bool) {
+        info!("INSIDE delete_range");
         self.cursor = (start.row, start.col);
 
         if start.row == end.row {
@@ -914,6 +920,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["🐱", "🐮"]);
     /// ```
     pub fn delete_str(&mut self, chars: usize) -> bool {
+        info!("INSIDE delete_str");
         if self.delete_selection(false) {
             return true;
         }
@@ -987,6 +994,7 @@ impl<'a> TextArea<'a> {
     }
 
     fn delete_piece(&mut self, col: usize, chars: usize) -> bool {
+        info!("INSIDE delete_piece");
         if chars == 0 {
             return false;
         }
@@ -1111,6 +1119,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["helloworld"]);
     /// ```
     pub fn delete_newline(&mut self) -> bool {
+        info!("INSIDE delete_newline");
         if self.delete_selection(false) {
             return true;
         }
@@ -1120,16 +1129,29 @@ impl<'a> TextArea<'a> {
             return false;
         }
 
-       self.shift_links_prevline(self.cursor, self.lines[row].len());
         let line = self.lines.remove(row);
-        info!("{}", log_format(&line, "line"));
-        let prev_line = &mut self.lines[row - 1];
-        info!("{}", log_format(&prev_line, "prev_line"));
+        let prev_line = &mut self.lines.clone()[row - 1];
         let prev_line_end = prev_line.len();
-       
+
         self.cursor = (row - 1, prev_line.chars().count());
         prev_line.push_str(&line);
         self.push_history(EditKind::DeleteNewline, Pos::new(row, 0, 0), prev_line_end);
+        true
+    }
+
+    pub fn delete_line(&mut self) -> bool {
+        let (row, _) = self.cursor;
+        
+        let line = self.lines.remove(row);
+
+        if row == 0 {
+            self.lines.push("".to_string());
+            self.cursor = (0, 0);
+        }
+        self.delete_links_in_range((row, 0), (row, std::usize::MAX));
+        self.shift_links((row + 1, 0), (row, 0));
+        self.push_history(EditKind::DeleteLine(line), Pos::new(row, 0, 0), 0);
+
         true
     }
 
@@ -1146,6 +1168,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["bc"]);
     /// ```
     pub fn delete_char(&mut self) -> bool {
+        info!("INSIDE delete_char");
         if self.delete_selection(false) {
             return true;
         }
@@ -1162,6 +1185,7 @@ impl<'a> TextArea<'a> {
             _ => (row, col - 1),
         };
 
+        info!("delete_pos: {:?}\n(row, col): ({}, {})", delete_pos, row, col);
         if let Some(id) = self.in_link(delete_pos) {
             self.delete_link(id);
         }
@@ -1199,16 +1223,20 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["ac"]);
     /// ```
     pub fn delete_next_char(&mut self) -> bool {
+        info!("INSIDE delete_next_char");
         if self.delete_selection(false) {
+            info!("delete_next_char::delete_selection");
             return true;
         }
 
         let before = self.cursor;
+
         self.move_cursor_with_shift(CursorMove::Forward, false);
         if before == self.cursor {
             return false; // Cursor didn't move, meant no character at next of cursor.
         }
 
+        info!("delete_next_char::no character at next of cursor");
         self.delete_char()
     }
 
@@ -1227,15 +1255,18 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["ab"]);
     /// ```
     pub fn delete_line_by_end(&mut self) -> bool {
+        info!("INSIDE delete_line_by_end");
         if self.delete_selection(false) {
+            info!("delete_line_by_end::delete_selection");
             return true;
         }
-
         let (_, col) = self.cursor;
         if self.delete_piece(col, usize::MAX) {
+            info!("delete_line_by_end::delete_piece");
             return true;
         }
         
+        info!("delete_line_by_end::delete_next_char");
         self.delete_next_char() // At the end of the line. Try to delete next line
     }
 
@@ -1254,10 +1285,13 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["cde"]);
     /// ```
     pub fn delete_line_by_head(&mut self) -> bool {
+        info!("INSIDE delete_line_by_head");
         if self.delete_selection(false) {
+            info!("delete_line_by_head::delete_selection");
             return true;
         }
         if self.delete_piece(0, self.cursor.1) {
+            info!("delete_line_by_head::delete_piece");
             return true;
         }
         self.delete_newline()
@@ -1282,6 +1316,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["aaa "]);
     /// ```
     pub fn delete_word(&mut self) -> bool {
+        info!("INSIDE delete_word");
         if self.delete_selection(false) {
             return true;
         }
@@ -1313,6 +1348,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), [" ccc"]);
     /// ```
     pub fn delete_next_word(&mut self) -> bool {
+        info!("INSIDE delete_next_word");
         if self.delete_selection(false) {
             return true;
         }
@@ -1541,7 +1577,9 @@ impl<'a> TextArea<'a> {
     }
 
     fn delete_selection(&mut self, should_yank: bool) -> bool {
+        info!("INSIDE delete_selection");
         if let Some((s, e)) = self.take_selection_range() {
+            info!("selection range => s: {:?}, e: {:?}", s, e);
             self.delete_links_in_range((s.row, s.col), (e.row, e.col));
             self.shift_links((s.row, s.col), (e.row, e.col));
 
@@ -1653,6 +1691,8 @@ impl<'a> TextArea<'a> {
             hl.selection(row, start.row, start.offset, end.row, end.offset);
         }
 
+        info!("INSIDE LINE_SPANS");
+        info!("{}", log_format(&self.lines, "self.lines"));
         hl.into_spans()
     }
 
@@ -1696,6 +1736,7 @@ impl<'a> TextArea<'a> {
     }
 
     pub fn delete_link(&mut self, link_id: usize) {
+        info!("inside delete_link");
         self.deleted_link_ids.push(link_id);
         self.links.remove(&link_id);
     }
