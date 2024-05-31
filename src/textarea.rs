@@ -1130,27 +1130,38 @@ impl<'a> TextArea<'a> {
         }
 
         let line = self.lines.remove(row);
-        let prev_line = &mut self.lines.clone()[row - 1];
+        let prev_line = &mut self.lines[row - 1];
         let prev_line_end = prev_line.len();
 
         self.cursor = (row - 1, prev_line.chars().count());
         prev_line.push_str(&line);
+        info!("delete_newline::line: {:?}", line);
+        info!("delete_newline::prev_line: {:?}", prev_line);
+        info!("self.lines: {:?}", self.lines);
         self.push_history(EditKind::DeleteNewline, Pos::new(row, 0, 0), prev_line_end);
         true
     }
 
-    pub fn delete_line(&mut self) -> bool {
+    pub fn delete_line(&mut self, shift_up: bool) -> bool {
         let (row, _) = self.cursor;
         
         let line = self.lines.remove(row);
 
-        if row == 0 {
-            self.lines.push("".to_string());
-            self.cursor = (0, 0);
-        }
         self.delete_links_in_range((row, 0), (row, std::usize::MAX));
         self.shift_links((row + 1, 0), (row, 0));
         self.push_history(EditKind::DeleteLine(line), Pos::new(row, 0, 0), 0);
+        
+        if row == 0 && self.lines.is_empty() {
+            self.lines.push("".to_string());
+            self.cursor = (0, 0);
+        } else if row == self.lines.len() {
+            self.cursor.0 = row - 1;
+        } else {
+            self.cursor.0 = match shift_up {
+                true => self.cursor.0.saturating_sub(1),
+                false => self.cursor.0,
+            };
+        }
 
         true
     }
@@ -1195,6 +1206,8 @@ impl<'a> TextArea<'a> {
         if col == 0 {
             return self.delete_newline();
         }
+
+        info!("after condition col == 0");
 
         let line = &mut self.lines[row];
         if let Some((offset, c)) = line.char_indices().nth(col - 1) {
@@ -1691,8 +1704,6 @@ impl<'a> TextArea<'a> {
             hl.selection(row, start.row, start.offset, end.row, end.offset);
         }
 
-        info!("INSIDE LINE_SPANS");
-        info!("{}", log_format(&self.lines, "self.lines"));
         hl.into_spans()
     }
 
