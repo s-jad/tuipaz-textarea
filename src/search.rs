@@ -35,6 +35,10 @@ impl Search {
         Ok(())
     }
 
+    pub fn clear_pattern(&mut self) {
+        self.pat = None;
+    }
+
     pub fn forward(
         &mut self,
         lines: &[String],
