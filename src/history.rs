@@ -7,6 +7,8 @@ pub enum EditKind {
     DeleteChar(char),
     InsertNewline,
     DeleteNewline,
+    InsertLine(String),
+    DeleteLine(String),
     InsertStr(String),
     DeleteStr(String),
     InsertChunk(Vec<String>),
@@ -32,6 +34,12 @@ impl EditKind {
                 debug_assert!(before.row > 0, "invalid pos: {:?}", before);
                 let line = lines.remove(before.row);
                 lines[before.row - 1].push_str(&line);
+            }
+            EditKind::InsertLine(l) => {
+                lines.insert(before.row, l.to_string());
+            }
+            EditKind::DeleteLine(_) => {
+                lines.remove(before.row);
             }
             EditKind::InsertStr(s) => {
                 lines[before.row].insert_str(before.offset, s.as_str());
@@ -81,6 +89,8 @@ impl EditKind {
             DeleteChar(c) => InsertChar(c),
             InsertNewline => DeleteNewline,
             DeleteNewline => InsertNewline,
+            InsertLine(s) => DeleteLine(s),
+            DeleteLine(s) => InsertLine(s),
             InsertStr(s) => DeleteStr(s),
             DeleteStr(s) => InsertStr(s),
             InsertChunk(c) => DeleteChunk(c),
