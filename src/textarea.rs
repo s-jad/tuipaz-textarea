@@ -1639,12 +1639,12 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["abc def"]);
     /// ```
     pub fn undo(&mut self) -> bool {
-        if let Some(cursor) = self.history.undo(&mut self.lines) {
+        if let Some((cursor_before, cursor_after)) = self.history.undo(&mut self.lines) {
             self.cancel_selection();
-            info!("undo::cursor returned from history: {:?}", cursor);
-            info!("undo::self.cursor: {:?}", self.cursor);
-            self.shift_links_after_edit(self.cursor, cursor);
-            self.cursor = cursor;
+            info!("undo::cursor_before returned from history: {:?}", cursor_before);
+            info!("undo::cursor_after returned from history: {:?}", cursor_after);
+            self.shift_links_after_edit(cursor_after, cursor_before);
+            self.cursor = cursor_before;
             true
         } else {
             false
@@ -1665,12 +1665,12 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), [" def"]);
     /// ```
     pub fn redo(&mut self) -> bool {
-        if let Some(cursor) = self.history.redo(&mut self.lines) {
+        if let Some((cursor_before, cursor_after)) = self.history.redo(&mut self.lines) {
             self.cancel_selection();
-            info!("redo::cursor returned from history: {:?}", cursor);
-            info!("redo::self.cursor: {:?}", self.cursor);
-            self.shift_links_after_edit(self.cursor, cursor);
-            self.cursor = cursor;
+            info!("redo::cursor_before returned from history: {:?}", cursor_before);
+            info!("redo::cursor_after returned from history: {:?}", cursor_after);
+            self.shift_links_after_edit(cursor_before, cursor_after);
+            self.cursor = cursor_after;
             true
         } else {
             false

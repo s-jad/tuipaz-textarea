@@ -166,21 +166,21 @@ impl History {
         self.edits.push_back(edit);
     }
 
-    pub fn redo(&mut self, lines: &mut Vec<String>) -> Option<(usize, usize)> {
+    pub fn redo(&mut self, lines: &mut Vec<String>) -> Option<((usize, usize), (usize, usize))> {
         if self.index == self.edits.len() {
             return None;
         }
         let edit = &self.edits[self.index];
         edit.redo(lines);
         self.index += 1;
-        Some(edit.cursor_after())
+        Some((edit.cursor_before(), edit.cursor_after()))
     }
 
-    pub fn undo(&mut self, lines: &mut Vec<String>) -> Option<(usize, usize)> {
+    pub fn undo(&mut self, lines: &mut Vec<String>) -> Option<((usize, usize), (usize, usize))> {
         self.index = self.index.checked_sub(1)?;
         let edit = &self.edits[self.index];
         edit.undo(lines);
-        Some(edit.cursor_before())
+        Some((edit.cursor_before(), edit.cursor_after()))
     }
 
     pub fn max_items(&self) -> usize {
