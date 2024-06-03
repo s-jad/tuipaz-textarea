@@ -757,7 +757,6 @@ impl<'a> TextArea<'a> {
             self.insert_link(c);
         }
 
-        self.delete_selection(false);
         let (row, col) = self.cursor;
         self.shift_links_same_row(row, (col, col + 1));
 
@@ -1119,7 +1118,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["helloworld"]);
     /// ```
     pub fn delete_newline(&mut self) -> bool {
-        info!("INSIDE delete_newline");
+        info!("Inside delete_newline");
         if self.delete_selection(false) {
             return true;
         }
@@ -1135,9 +1134,6 @@ impl<'a> TextArea<'a> {
 
         self.cursor = (row - 1, prev_line.chars().count());
         prev_line.push_str(&line);
-        info!("delete_newline::line: {:?}", line);
-        info!("delete_newline::prev_line: {:?}", prev_line);
-        info!("self.lines: {:?}", self.lines);
         self.push_history(EditKind::DeleteNewline, Pos::new(row, 0, 0), prev_line_end);
         true
     }
@@ -1594,7 +1590,7 @@ impl<'a> TextArea<'a> {
         if let Some((s, e)) = self.take_selection_range() {
             info!("selection range => s: {:?}, e: {:?}", s, e);
             self.delete_links_in_range((s.row, s.col), (e.row, e.col));
-            self.shift_links((s.row, s.col), (e.row, e.col));
+            self.shift_links((e.row, e.col), (s.row, s.col));
 
             self.delete_range(s, e, should_yank);
             return true;
@@ -1645,6 +1641,9 @@ impl<'a> TextArea<'a> {
     pub fn undo(&mut self) -> bool {
         if let Some(cursor) = self.history.undo(&mut self.lines) {
             self.cancel_selection();
+            info!("undo::cursor returned from history: {:?}", cursor);
+            info!("undo::self.cursor: {:?}", self.cursor);
+            self.shift_links_after_edit(self.cursor, cursor);
             self.cursor = cursor;
             true
         } else {
@@ -1668,6 +1667,9 @@ impl<'a> TextArea<'a> {
     pub fn redo(&mut self) -> bool {
         if let Some(cursor) = self.history.redo(&mut self.lines) {
             self.cancel_selection();
+            info!("redo::cursor returned from history: {:?}", cursor);
+            info!("redo::self.cursor: {:?}", self.cursor);
+            self.shift_links_after_edit(self.cursor, cursor);
             self.cursor = cursor;
             true
         } else {
@@ -1811,22 +1813,75 @@ impl<'a> TextArea<'a> {
                     || (l.row == start_row && end_row != start_row)
                 {
                     info!("shifting columns");
-                    l.start_col = match (l.start_col as i64 + dcol) as usize {
-                        std::usize::MAX => 0,
-                        n => n
-                    };
-                    l.end_col = match (l.end_col as i64 + dcol) as usize {
-                        std::usize::MAX => 0,
-                        n => n
-                    };
+                    (l.start_col, l.end_col) = match dcol >= 0 {
+                        true => {
+                            (l.start_col.saturating_add(dcol as usize),
+                            l.end_col.saturating_add(dcol as usize))
+                        },
+                        false => {
+                            let positive_dcol = dcol.unsigned_abs() as usize;
+                            (l.start_col.saturating_sub(positive_dcol),
+                            l.end_col.saturating_sub(positive_dcol))
+                        },
+                    }
                 }
 
-                l.row = match (l.row as i64 + drow) as usize {
-                    std::usize::MAX => 0,
-                    n => n,
+                (l.row) = match drow >= 0 {
+                    true => {
+                        l.row.saturating_add(drow as usize)
+                    },
+                    false => {
+                        let positive_drow = drow.unsigned_abs() as usize;
+                        l.row.saturating_sub(positive_drow)
+                    },
                 }
             } 
             info!("link after shift{}", log_format(&l, ""));
+        }
+    }
+
+    pub fn shift_links_after_edit(
+        &mut self,
+        (start_row, start_col): (usize, usize),
+        (end_row, end_col): (usize, usize)
+    ) {
+        let drow = end_row as i64 - start_row as i64;
+        let dcol = end_col as i64 - start_col as i64;
+     
+        info!("shift_links_after_edit::{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
+        info!("shift_links_after_edit::{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
+        info!("shift_links_after_edit::{}", log_format(&(drow, dcol), "(drow, dcol)"));
+        for l in self.links.values_mut() {
+            info!("shift_links_after_edit::link before shift{}", log_format(&l, ""));
+            if l.row >= start_row {
+                if (l.row == end_row && l.start_col >= start_col)
+                    || (l.row == start_row && end_row != start_row)
+                {
+                    info!("shifting columns");
+                    (l.start_col, l.end_col) = match dcol >= 0 {
+                        true => {
+                            (l.start_col.saturating_add(dcol as usize),
+                            l.end_col.saturating_add(dcol as usize))
+                        },
+                        false => {
+                            let positive_dcol = dcol.unsigned_abs() as usize;
+                            (l.start_col.saturating_sub(positive_dcol),
+                            l.end_col.saturating_sub(positive_dcol))
+                        },
+                    }
+                }
+
+                (l.row) = match drow >= 0 {
+                    true => {
+                        l.row.saturating_add(drow as usize)
+                    },
+                    false => {
+                        let positive_drow = drow.unsigned_abs() as usize;
+                        l.row.saturating_sub(positive_drow)
+                    },
+                }
+            } 
+            info!("shift_links_after_edit::link after shift{}", log_format(&l, ""));
         }
     }
 
@@ -2437,6 +2492,16 @@ impl<'a> TextArea<'a> {
     #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
     pub fn search_pattern(&self) -> Option<&regex::Regex> {
         self.search.pat.as_ref()
+    }
+
+    #[cfg(feature = "search")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
+    pub fn clear_search(&mut self) {
+        self.search.clear_pattern();
+    }
+
+    pub fn clear_lines(&mut self) {
+        self.lines = vec!["".to_owned()];
     }
 
     /// Search the pattern set by [`TextArea::set_search_pattern`] forward and move the cursor to the next match
