@@ -2,7 +2,7 @@ use log::info;
 
 use crate::cursor::CursorMove;
 use crate::highlight::LineHighlighter;
-use crate::history::{Edit, EditKind, History};
+use crate::history::{Edit, EditKind, History, MaybeLinks};
 use crate::input::{Input, Key};
 use crate::links::Link;
 use crate::ratatui::layout::Alignment;
@@ -769,7 +769,7 @@ impl<'a> TextArea<'a> {
         line.insert(i, c);
         self.cursor.1 += 1;
         self.push_history(
-            EditKind::InsertChar(c),
+            EditKind::InsertChar((c, None)),
             Pos::new(row, col, i),
             i + c.len_utf8(),
         );
@@ -824,8 +824,8 @@ impl<'a> TextArea<'a> {
 
         let end_offset = chunk.last().unwrap().len();
 
-        let edit = EditKind::InsertChunk(chunk);
-        edit.apply(&mut self.lines, &before, &Pos::new(new_row, new_col, end_offset));
+        let edit = EditKind::InsertChunk((chunk, None));
+        edit.apply(&mut self.lines, &mut self.links, &before, &Pos::new(new_row, new_col, end_offset));
 
         self.push_history(edit, before, end_offset);
         true
@@ -856,11 +856,11 @@ impl<'a> TextArea<'a> {
         
         self.shift_links((row, col), (row, self.cursor.1));
 
-        self.push_history(EditKind::InsertStr(s), Pos::new(row, col, i), end_offset);
+        self.push_history(EditKind::InsertStr((s, None)), Pos::new(row, col, i), end_offset);
         true
     }
 
-    fn delete_range(&mut self, start: Pos, end: Pos, should_yank: bool) {
+    fn delete_range(&mut self, start: Pos, end: Pos, links: MaybeLinks, should_yank: bool) {
         info!("INSIDE delete_range");
         self.cursor = (start.row, start.col);
 
@@ -872,7 +872,7 @@ impl<'a> TextArea<'a> {
             if should_yank {
                 self.yank = removed.clone().into();
             }
-            self.push_history(EditKind::DeleteStr(removed), end, start.offset);
+            self.push_history(EditKind::DeleteStr((removed, links)), end, start.offset);
             return;
         }
 
@@ -893,9 +893,9 @@ impl<'a> TextArea<'a> {
         }
 
         let edit = if deleted.len() == 1 {
-            EditKind::DeleteStr(deleted.remove(0))
+            EditKind::DeleteStr((deleted.remove(0), links))
         } else {
-            EditKind::DeleteChunk(deleted)
+            EditKind::DeleteChunk((deleted, links))
         };
         self.push_history(edit, end, start.offset);
     }
@@ -965,9 +965,9 @@ impl<'a> TextArea<'a> {
                 .to_string();
             self.yank = removed.clone().into();
             self.push_history(
-                EditKind::DeleteStr(removed),
+                EditKind::DeleteStr((removed, None)),
                 Pos::new(start_row, end_col, end_offset),
-                start_offset,
+                start_offset
             );
             return true;
         }
@@ -988,7 +988,7 @@ impl<'a> TextArea<'a> {
 
         let start = Pos::new(start_row, start_col, start_offset);
         let end = Pos::new(r, col, offset);
-        self.delete_range(start, end, true);
+        self.delete_range(start, end, None, true);
         true
     }
 
@@ -1018,7 +1018,7 @@ impl<'a> TextArea<'a> {
             let removed = line.drain(i..i + bytes).as_str().to_string();
             let line_empty = line.is_empty(); 
 
-            self.delete_links_in_range((row, col), (row, col + chars));
+            let links = self.delete_links_in_range((row, col), (row, col + chars));
             
             let start_col = match line_empty {
                 true => col,
@@ -1029,9 +1029,9 @@ impl<'a> TextArea<'a> {
 
             self.cursor = (row, col);
             self.push_history(
-                EditKind::DeleteStr(removed.clone()),
+                EditKind::DeleteStr((removed.clone(), links)),
                 Pos::new(row, col + chars, i + bytes),
-                i,
+                i
             );
             self.yank = removed.into();
             true
@@ -1143,9 +1143,9 @@ impl<'a> TextArea<'a> {
         
         let line = self.lines.remove(row);
 
-        self.delete_links_in_range((row, 0), (row, std::usize::MAX));
+        let links = self.delete_links_in_range((row, 0), (row, std::usize::MAX));
         self.shift_links((row + 1, 0), (row, 0));
-        self.push_history(EditKind::DeleteLine(line), Pos::new(row, 0, 0), 0);
+        self.push_history(EditKind::DeleteLine((line, links)), Pos::new(row, 0, 0), 0);
         
         if row == 0 && self.lines.is_empty() {
             self.lines.push("".to_string());
@@ -1192,10 +1192,15 @@ impl<'a> TextArea<'a> {
             _ => (row, col - 1),
         };
 
-        info!("delete_pos: {:?}\n(row, col): ({}, {})", delete_pos, row, col);
+        let mut links = vec![];
         if let Some(id) = self.in_link(delete_pos) {
-            self.delete_link(id);
+            links.push(self.delete_link(id));
         }
+
+        let links_for_edit = match links.is_empty() {
+            true => None,
+            false => Some(links),
+        };
 
         self.shift_links((row, col), delete_pos);
 
@@ -1203,16 +1208,14 @@ impl<'a> TextArea<'a> {
             return self.delete_newline();
         }
 
-        info!("after condition col == 0");
-
         let line = &mut self.lines[row];
         if let Some((offset, c)) = line.char_indices().nth(col - 1) {
             line.remove(offset);
             self.cursor.1 -= 1;
             self.push_history(
-                EditKind::DeleteChar(c),
+                EditKind::DeleteChar((c, links_for_edit)),
                 Pos::new(row, col, offset + c.len_utf8()),
-                offset,
+                offset
             );
             true
         } else {
@@ -1589,10 +1592,10 @@ impl<'a> TextArea<'a> {
         info!("INSIDE delete_selection");
         if let Some((s, e)) = self.take_selection_range() {
             info!("selection range => s: {:?}, e: {:?}", s, e);
-            self.delete_links_in_range((s.row, s.col), (e.row, e.col));
+            let links = self.delete_links_in_range((s.row, s.col), (e.row, e.col));
             self.shift_links((e.row, e.col), (s.row, s.col));
 
-            self.delete_range(s, e, should_yank);
+            self.delete_range(s, e, links, should_yank);
             return true;
         }
         false
@@ -1639,10 +1642,8 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["abc def"]);
     /// ```
     pub fn undo(&mut self) -> bool {
-        if let Some((cursor_before, cursor_after)) = self.history.undo(&mut self.lines) {
+        if let Some((cursor_before, cursor_after)) = self.history.undo(&mut self.lines, &mut self.links) {
             self.cancel_selection();
-            info!("undo::cursor_before returned from history: {:?}", cursor_before);
-            info!("undo::cursor_after returned from history: {:?}", cursor_after);
             self.shift_links_after_edit(cursor_after, cursor_before);
             self.cursor = cursor_before;
             true
@@ -1665,10 +1666,8 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), [" def"]);
     /// ```
     pub fn redo(&mut self) -> bool {
-        if let Some((cursor_before, cursor_after)) = self.history.redo(&mut self.lines) {
+        if let Some((cursor_before, cursor_after)) = self.history.redo(&mut self.lines, &mut self.links) {
             self.cancel_selection();
-            info!("redo::cursor_before returned from history: {:?}", cursor_before);
-            info!("redo::cursor_after returned from history: {:?}", cursor_after);
             self.shift_links_after_edit(cursor_before, cursor_after);
             self.cursor = cursor_after;
             true
@@ -1748,10 +1747,10 @@ impl<'a> TextArea<'a> {
         }
     }
 
-    pub fn delete_link(&mut self, link_id: usize) {
+    pub fn delete_link(&mut self, link_id: usize) -> (usize, Link) {
         info!("inside delete_link");
         self.deleted_link_ids.push(link_id);
-        self.links.remove(&link_id);
+        self.links.remove_entry(&link_id).expect("Link with that id should exist")
     }
 
     /// in_link checks if the cursor's current position (`cpos`) falls within any of the defined links in the `TextArea`.
@@ -1898,8 +1897,8 @@ impl<'a> TextArea<'a> {
             info!("{}", log_format(&(row, col), "(row, col)"));
             if l.row >= row {
                 l.row = l.row.saturating_sub(1);
-                l.start_col += dcol;
-                l.end_col += dcol;
+                l.start_col = l.start_col.saturating_add(dcol);
+                l.end_col = l.end_col.saturating_add(dcol);
             }
             info!("{}", log_format(&l, "l after shift"));
         }
@@ -1917,14 +1916,15 @@ impl<'a> TextArea<'a> {
                 l.row = l.row.saturating_add(1);
             } else if l.row == row && l.start_col >= col {
                 l.row = l.row.saturating_add(1);
-                l.start_col -= col;
-                l.end_col -= col;
+                l.start_col = l.start_col.saturating_sub(col);
+                l.end_col = l.end_col.saturating_sub(col);
             }
             info!("{}", log_format(&l, "l after shift"));
         }
     }
 
-    pub fn delete_links_in_range(&mut self, start: (usize, usize), end: (usize, usize)) {
+    pub fn delete_links_in_range(&mut self, start: (usize, usize), end: (usize, usize)) -> MaybeLinks {
+        let mut deleted_links = Vec::new();
         for (id, link) in self.links.clone().iter() {
             if (link.row < start.0 || link.row > end.0)
                 || (link.row == start.0 && link.end_col < start.1)
@@ -1933,8 +1933,14 @@ impl<'a> TextArea<'a> {
                 continue;
             } else {
                 info!("deleting: {}", log_format(&link, ""));
-                self.delete_link(*id);
+                deleted_links.push(self.delete_link(*id));
             }
+        }
+
+        if deleted_links.is_empty() {
+            None
+        } else {
+            Some(deleted_links)
         }
     }
 
