@@ -1,7 +1,8 @@
 use crate::links::Link;
 use crate::ratatui::style::Style;
 use crate::ratatui::text::Span;
-use crate::util::{num_digits, spaces};
+use crate::util::{num_digits, spaces, log_format};
+use log::info;
 #[cfg(feature = "ratatui")]
 use ratatui::text::Line;
 use std::borrow::Cow;
@@ -164,7 +165,7 @@ impl<'a> LineHighlighter<'a> {
     }
 
     pub fn links(&mut self, links: &HashMap<usize, Link>, row: usize, style: Style) {
-        for link in links.values() {
+        for link in links.values().filter(|link| !link.deleted) {
             if link.row == row {
                 self.boundaries
                     .push((Boundary::Link(style), link.start_col));
@@ -240,7 +241,6 @@ impl<'a> LineHighlighter<'a> {
         let mut style = style_begin;
         let mut start = 0;
         let mut stack = vec![];
-
         for (next_boundary, end) in boundaries {
             if start < end {
                 spans.push(Span::styled(builder.build(&line[start..end]), style));
