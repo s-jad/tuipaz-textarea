@@ -4,6 +4,8 @@ pub struct Link {
     pub row: usize,
     pub start_col: usize,
     pub end_col: usize,
+    pub edited: bool,
+    pub deleted: bool,
 }
 
 impl Link {
@@ -13,7 +15,18 @@ impl Link {
             row,
             start_col,
             end_col,
+            edited: false,
+            deleted: false,
         }
+    }
+
+
+    pub(crate) fn toggle_edited(&mut self) {
+        self.edited = !self.edited;
+    }
+
+    pub(crate) fn toggle_deleted(&mut self) {
+        self.deleted = !self.deleted;
     }
 }
 
