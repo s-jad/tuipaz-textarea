@@ -2,7 +2,7 @@ use log::info;
 
 use crate::cursor::CursorMove;
 use crate::highlight::LineHighlighter;
-use crate::history::{Edit, EditKind, History, MaybeLinks};
+use crate::history::{Edit, EditKind, History, MaybeLinkIds};
 use crate::input::{Input, Key};
 use crate::links::Link;
 use crate::ratatui::layout::Alignment;
@@ -734,6 +734,7 @@ impl<'a> TextArea<'a> {
     }
 
     fn push_history(&mut self, kind: EditKind, before: Pos, after_offset: usize) {
+        info!("Inside push history::edit kind: {:?} ", kind);
         let (row, col) = self.cursor;
         let after = Pos::new(row, col, after_offset);
         let edit = Edit::new(kind, before, after);
@@ -824,7 +825,7 @@ impl<'a> TextArea<'a> {
 
         let end_offset = chunk.last().unwrap().len();
 
-        let edit = EditKind::InsertChunk((chunk, None));
+        let mut edit = EditKind::InsertChunk((chunk, None));
         edit.apply(&mut self.lines, &mut self.links, &before, &Pos::new(new_row, new_col, end_offset));
 
         self.push_history(edit, before, end_offset);
@@ -860,7 +861,7 @@ impl<'a> TextArea<'a> {
         true
     }
 
-    fn delete_range(&mut self, start: Pos, end: Pos, links: MaybeLinks, should_yank: bool) {
+    fn delete_range(&mut self, start: Pos, end: Pos, link_ids: MaybeLinkIds, should_yank: bool) {
         info!("INSIDE delete_range");
         self.cursor = (start.row, start.col);
 
@@ -872,7 +873,7 @@ impl<'a> TextArea<'a> {
             if should_yank {
                 self.yank = removed.clone().into();
             }
-            self.push_history(EditKind::DeleteStr((removed, links)), end, start.offset);
+            self.push_history(EditKind::DeleteStr((removed, link_ids)), end, start.offset);
             return;
         }
 
@@ -893,9 +894,9 @@ impl<'a> TextArea<'a> {
         }
 
         let edit = if deleted.len() == 1 {
-            EditKind::DeleteStr((deleted.remove(0), links))
+            EditKind::DeleteStr((deleted.remove(0), link_ids))
         } else {
-            EditKind::DeleteChunk((deleted, links))
+            EditKind::DeleteChunk((deleted, link_ids))
         };
         self.push_history(edit, end, start.offset);
     }
@@ -1018,7 +1019,7 @@ impl<'a> TextArea<'a> {
             let removed = line.drain(i..i + bytes).as_str().to_string();
             let line_empty = line.is_empty(); 
 
-            let links = self.delete_links_in_range((row, col), (row, col + chars));
+            let link_ids = self.delete_links_in_range((row, col), (row, col + chars));
             
             let start_col = match line_empty {
                 true => col,
@@ -1029,7 +1030,7 @@ impl<'a> TextArea<'a> {
 
             self.cursor = (row, col);
             self.push_history(
-                EditKind::DeleteStr((removed.clone(), links)),
+                EditKind::DeleteStr((removed.clone(), link_ids)),
                 Pos::new(row, col + chars, i + bytes),
                 i
             );
@@ -1143,9 +1144,9 @@ impl<'a> TextArea<'a> {
         
         let line = self.lines.remove(row);
 
-        let links = self.delete_links_in_range((row, 0), (row, std::usize::MAX));
+        let link_ids = self.delete_links_in_range((row, 0), (row, std::usize::MAX));
         self.shift_links((row + 1, 0), (row, 0));
-        self.push_history(EditKind::DeleteLine((line, links)), Pos::new(row, 0, 0), 0);
+        self.push_history(EditKind::DeleteLine((line, link_ids)), Pos::new(row, 0, 0), 0);
         
         if row == 0 && self.lines.is_empty() {
             self.lines.push("".to_string());
@@ -1197,23 +1198,24 @@ impl<'a> TextArea<'a> {
             links.push(self.delete_link(id));
         }
 
-        let links_for_edit = match links.is_empty() {
+        let link_ids = match links.is_empty() {
             true => None,
             false => Some(links),
         };
 
         self.shift_links((row, col), delete_pos);
-
+            
         if col == 0 {
             return self.delete_newline();
         }
 
         let line = &mut self.lines[row];
         if let Some((offset, c)) = line.char_indices().nth(col - 1) {
+            info!("delete_char::inside if let Some ...etc ");
             line.remove(offset);
             self.cursor.1 -= 1;
             self.push_history(
-                EditKind::DeleteChar((c, links_for_edit)),
+                EditKind::DeleteChar((c, link_ids)),
                 Pos::new(row, col, offset + c.len_utf8()),
                 offset
             );
@@ -1592,10 +1594,10 @@ impl<'a> TextArea<'a> {
         info!("INSIDE delete_selection");
         if let Some((s, e)) = self.take_selection_range() {
             info!("selection range => s: {:?}, e: {:?}", s, e);
-            let links = self.delete_links_in_range((s.row, s.col), (e.row, e.col));
+            let link_ids = self.delete_links_in_range((s.row, s.col), (e.row, e.col));
             self.shift_links((e.row, e.col), (s.row, s.col));
 
-            self.delete_range(s, e, links, should_yank);
+            self.delete_range(s, e, link_ids, should_yank);
             return true;
         }
         false
@@ -1666,6 +1668,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), [" def"]);
     /// ```
     pub fn redo(&mut self) -> bool {
+        info!("inside textarea.rs redo");
         if let Some((cursor_before, cursor_after)) = self.history.redo(&mut self.lines, &mut self.links) {
             self.cancel_selection();
             self.shift_links_after_edit(cursor_before, cursor_after);
@@ -1747,10 +1750,12 @@ impl<'a> TextArea<'a> {
         }
     }
 
-    pub fn delete_link(&mut self, link_id: usize) -> (usize, Link) {
+    pub fn delete_link(&mut self, link_id: usize) -> usize {
         info!("inside delete_link");
         self.deleted_link_ids.push(link_id);
-        self.links.remove_entry(&link_id).expect("Link with that id should exist")
+        let link = self.links.get_mut(&link_id).expect("link to delete should be present");
+        link.toggle_deleted();
+        link_id
     }
 
     /// in_link checks if the cursor's current position (`cpos`) falls within any of the defined links in the `TextArea`.
@@ -1764,7 +1769,7 @@ impl<'a> TextArea<'a> {
     ///  - None -> if the cursor is not inside a link.
     ///
     pub fn in_link(&self, cpos: (usize, usize)) -> Option<usize> {
-        for (id, link) in self.links.iter() {
+        for (id, link) in self.links.iter().filter(|(_, link)| !link.deleted) {
             // No links on cursor row
             if cpos.0 != link.row {
                 continue;
@@ -1781,7 +1786,7 @@ impl<'a> TextArea<'a> {
     pub fn shift_links_same_row(&mut self, row: usize, (start_col, end_col): (usize, usize)) {
         let dcol = end_col as i64 - start_col as i64;
 
-        for l in self.links.values_mut().filter(|l| l.row == row && l.start_col >= start_col) {
+        for l in self.links.values_mut().filter(|l| l.row == row && l.start_col >= start_col && !l.deleted) {
             l.start_col = match (l.start_col as i64 + dcol) as usize {
                 std::usize::MAX => 0,
                 n => n
@@ -1805,7 +1810,7 @@ impl<'a> TextArea<'a> {
         info!("{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
         info!("{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
         info!("{}", log_format(&(drow, dcol), "(drow, dcol)"));
-        for l in self.links.values_mut() {
+        for l in self.links.values_mut().filter(|l| !l.deleted) {
             info!("link before shift{}", log_format(&l, ""));
             if l.row >= end_row {
                 if (l.row == end_row && l.start_col >= end_col)
@@ -1847,16 +1852,11 @@ impl<'a> TextArea<'a> {
         let drow = end_row as i64 - start_row as i64;
         let dcol = end_col as i64 - start_col as i64;
      
-        info!("shift_links_after_edit::{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
-        info!("shift_links_after_edit::{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
-        info!("shift_links_after_edit::{}", log_format(&(drow, dcol), "(drow, dcol)"));
-        for l in self.links.values_mut() {
-            info!("shift_links_after_edit::link before shift{}", log_format(&l, ""));
-            if l.row >= start_row {
+        for l in self.links.values_mut().filter(|l| !l.deleted) {
+            if l.row >= start_row && !l.edited {
                 if (l.row == end_row && l.start_col >= start_col)
                     || (l.row == start_row && end_row != start_row)
                 {
-                    info!("shifting columns");
                     (l.start_col, l.end_col) = match dcol >= 0 {
                         true => {
                             (l.start_col.saturating_add(dcol as usize),
@@ -1879,8 +1879,9 @@ impl<'a> TextArea<'a> {
                         l.row.saturating_sub(positive_drow)
                     },
                 }
-            } 
-            info!("shift_links_after_edit::link after shift{}", log_format(&l, ""));
+            } else {
+                l.toggle_edited();
+            }
         }
     }
 
@@ -1923,7 +1924,7 @@ impl<'a> TextArea<'a> {
         }
     }
 
-    pub fn delete_links_in_range(&mut self, start: (usize, usize), end: (usize, usize)) -> MaybeLinks {
+    pub fn delete_links_in_range(&mut self, start: (usize, usize), end: (usize, usize)) -> MaybeLinkIds {
         let mut deleted_links = Vec::new();
         for (id, link) in self.links.clone().iter() {
             if (link.row < start.0 || link.row > end.0)
@@ -2695,7 +2696,7 @@ mod tests {
     #[test]
     fn test_delete_piece_includes_link() {
         let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11, edited: false, deleted: false });
 
         textarea.delete_piece(5, 10);
 
@@ -2705,7 +2706,7 @@ mod tests {
     #[test]
     fn test_delete_entire_link() {
         let mut textarea = TextArea::new(vec!["[Link]".into()], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5, edited: false , deleted: false });
 
         textarea.delete_piece(0, 5);
 
@@ -2715,7 +2716,7 @@ mod tests {
     #[test]
     fn test_delete_part_of_link() {
         let mut textarea = TextArea::new(vec!["[Example Link]".into()], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 21 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 21, edited: false , deleted: false });
 
         textarea.delete_piece(7, 9);
 
@@ -2725,7 +2726,7 @@ mod tests {
     #[test]
     fn test_links_shift_on_insert_char() {
         let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(0, 5));
         textarea.insert_char(' ');
         
@@ -2736,7 +2737,7 @@ mod tests {
     #[test]
     fn test_links_shift_on_delete_char() {
         let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(0, 5));
         textarea.delete_char();
         
@@ -2750,11 +2751,11 @@ mod tests {
             "Line without link.".into(),
             "[Link]".into()
         ], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5 });
+        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
 
         textarea.delete_piece(0, 5);
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 , edited: false , deleted: false}));
     }
 
     #[test]
@@ -2762,12 +2763,12 @@ mod tests {
         let mut textarea = TextArea::new(vec![
             "Before [link] and after.".into()
         ], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.delete_piece(0, 6);
         textarea.delete_piece(23, 13);
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 6 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 6 , edited: false , deleted: false}));
     }
 
     #[test]
@@ -2776,16 +2777,16 @@ mod tests {
             "[Link]".into(),
             "Some text below.".into()
         ], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(1, 0));
         textarea.insert_newline();
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 , edited: false , deleted: false}));
         
         textarea.move_cursor(CursorMove::Jump(0, 0));
         textarea.insert_newline();
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 , edited: false , deleted: false}));
     }
 
     #[test]
@@ -2796,16 +2797,16 @@ mod tests {
             "Some text below.".into()
         ], HashMap::new());
 
-        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5 });
+        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(2, 0));
         textarea.delete_line_by_head();
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 , edited: false , deleted: false}));
         
         textarea.move_cursor(CursorMove::Jump(0, 0));
         textarea.delete_line_by_head();
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 , edited: false , deleted: false}));
     }
 
     #[test]
@@ -2816,18 +2817,18 @@ mod tests {
             "Some text below.".into()
         ], HashMap::new());
 
-        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5 });
+        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(2, 0));
         textarea.move_cursor(CursorMove::End);
         textarea.delete_line_by_end();
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 1, start_col: 0, end_col: 5 , edited: false , deleted: false}));
         
         textarea.move_cursor(CursorMove::Jump(0, 0));
         textarea.move_cursor(CursorMove::End);
         textarea.delete_line_by_end();
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 , edited: false , deleted: false}));
     }
 
     #[test]
@@ -2835,7 +2836,7 @@ mod tests {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
         ], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 0));
         textarea.move_cursor(CursorMove::End);
@@ -2849,7 +2850,7 @@ mod tests {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
         ], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 7));
         textarea.move_cursor(CursorMove::Jump(0, 12));
@@ -2863,7 +2864,7 @@ mod tests {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
         ], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 6));
         textarea.move_cursor(CursorMove::Jump(0, 8));
@@ -2877,13 +2878,13 @@ mod tests {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
         ], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 0));
         textarea.move_cursor(CursorMove::Jump(0, 5));
         textarea.delete_selection(false);
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 2, end_col: 7 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 2, end_col: 7 , edited: false , deleted: false}));
     }
 
     #[test]
@@ -2894,13 +2895,13 @@ mod tests {
             "Before [link] after".into()
         ], HashMap::new());
 
-        textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12 });
+        textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 0));
         textarea.move_cursor(CursorMove::Jump(1, 11));
         textarea.delete_selection(false);
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 7, end_col: 12 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 7, end_col: 12 , edited: false , deleted: false}));
     }
 
     #[test]
@@ -2911,13 +2912,13 @@ mod tests {
             "Before [link] after".into()
         ], HashMap::new());
 
-        textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12 });
+        textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 0));
         textarea.move_cursor(CursorMove::Jump(2, 6));
         textarea.delete_selection(false);
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 0, end_col: 5 , edited: false , deleted: false}));
     }
 
     #[test]
@@ -2928,13 +2929,13 @@ mod tests {
             "Text below 2".into(),
         ], HashMap::new());
 
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 13));
         textarea.move_cursor(CursorMove::Jump(2, 11));
         textarea.delete_selection(false);
 
-        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 7, end_col: 12 }));
+        assert_eq!(textarea.links.get(&0), Some(&Link { id: 0, row: 0, start_col: 7, end_col: 12 , edited: false , deleted: false}));
     }
 
     #[test]
@@ -2949,24 +2950,24 @@ mod tests {
     #[test]
     fn test_delete_newline_with_links_next_line() {
         let mut textarea = TextArea::new(vec!["Line 1".into(), "[Link]".into()], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5 });
+        textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.cursor = (1, 0);
 
         assert!(textarea.delete_newline());
-        assert_eq!(textarea.links.get(&0).unwrap(), &Link { id: 0, row: 0, start_col: 5, end_col: 10 });
+        assert_eq!(textarea.links.get(&0).unwrap(), &Link { id: 0, row: 0, start_col: 5, end_col: 10, edited: false , deleted: false });
         assert_eq!(textarea.lines, vec!["Line 1[Link]".to_string()]);
     }
 
     #[test]
     fn test_delete_newline_with_links_both_lines() {
         let mut textarea = TextArea::new(vec!["[Link1]".into(), "[Link2]".into()], HashMap::new());
-        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 6 });
-        textarea.links.insert(1, Link { id: 1, row: 1, start_col: 0, end_col: 6 });
+        textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 6, edited: false , deleted: false });
+        textarea.links.insert(1, Link { id: 1, row: 1, start_col: 0, end_col: 6, edited: false , deleted: false });
         textarea.cursor = (1, 0);
 
         assert!(textarea.delete_newline());
-        assert_eq!(textarea.links.get(&0).unwrap(), &Link { id: 0, row: 0, start_col: 0, end_col: 6 });
-        assert_eq!(textarea.links.get(&1).unwrap(), &Link { id: 1, row: 0, start_col: 7, end_col: 13 });
+        assert_eq!(textarea.links.get(&0).unwrap(), &Link { id: 0, row: 0, start_col: 0, end_col: 6, edited: false , deleted: false });
+        assert_eq!(textarea.links.get(&1).unwrap(), &Link { id: 1, row: 0, start_col: 7, end_col: 13, edited: false , deleted: false });
         assert_eq!(textarea.lines, vec!["[Link1][Link2]".to_string()]);
     }
 }
