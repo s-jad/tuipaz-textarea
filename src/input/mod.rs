@@ -100,7 +100,7 @@ impl Default for Key {
 ///     shift: false,
 /// });
 /// ```
-#[derive(Debug, Clone, Default, PartialEq, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Hash)]
 #[cfg_attr(feature = "arbitrary", derive(Arbitrary))]
 pub struct Input {
     /// Typed key.
