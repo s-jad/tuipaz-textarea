@@ -1146,7 +1146,7 @@ impl<'a> TextArea<'a> {
 
         let link_ids = self.delete_links_in_range((row, 0), (row, std::usize::MAX));
         self.shift_links((row + 1, 0), (row, 0));
-        self.push_history(EditKind::DeleteLine((line, link_ids)), Pos::new(row, 0, 0), 0);
+        self.push_history(EditKind::DeleteLine((line, link_ids)), Pos::new(row + 1, 0, 0), 0);
         
         if row == 0 && self.lines.is_empty() {
             self.lines.push("".to_string());
@@ -1851,9 +1851,10 @@ impl<'a> TextArea<'a> {
     ) {
         let drow = end_row as i64 - start_row as i64;
         let dcol = end_col as i64 - start_col as i64;
-     
-        for l in self.links.values_mut().filter(|l| !l.deleted) {
-            if l.row >= start_row && !l.edited {
+        
+        // Dont shift links that were in the edit or are currently deleted
+        for l in self.links.values_mut().filter(|l| !l.deleted && !l.edited) {
+            if l.row >= start_row {
                 if (l.row == end_row && l.start_col >= start_col)
                     || (l.row == start_row && end_row != start_row)
                 {
@@ -1878,7 +1879,7 @@ impl<'a> TextArea<'a> {
                         let positive_drow = drow.unsigned_abs() as usize;
                         l.row.saturating_sub(positive_drow)
                     },
-                }
+                };
             } else {
                 l.toggle_edited();
             }
