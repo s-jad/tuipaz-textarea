@@ -21,36 +21,21 @@ use unicode_width::UnicodeWidthChar as _;
 
 #[derive(Debug, Clone)]
 enum YankText {
-    Piece(String),
-    Chunk(Vec<String>),
+    Piece((String, MaybeLinkIds)),
+    Chunk((Vec<String>, MaybeLinkIds)),
 }
 
 impl Default for YankText {
     fn default() -> Self {
-        Self::Piece(String::new())
-    }
-}
-
-impl From<String> for YankText {
-    fn from(s: String) -> Self {
-        Self::Piece(s)
-    }
-}
-impl From<Vec<String>> for YankText {
-    fn from(mut c: Vec<String>) -> Self {
-        match c.len() {
-            0 => Self::default(),
-            1 => Self::Piece(c.remove(0)),
-            _ => Self::Chunk(c),
-        }
+        Self::Piece((String::new(), None))
     }
 }
 
 impl ToString for YankText {
     fn to_string(&self) -> String {
         match self {
-            Self::Piece(s) => s.clone(),
-            Self::Chunk(ss) => ss.join("\n"),
+            Self::Piece((s, _)) => s.clone(),
+            Self::Chunk((ss, _)) => ss.join("\n"),
         }
     }
 }
@@ -821,7 +806,7 @@ impl<'a> TextArea<'a> {
             chunk[chunk.len() - 1].chars().count(),
         );
         self.cursor = (new_row, new_col);
-        self.shift_links((row, col), (new_row, new_col));
+        self.shift_links_after_insert((row, col), (new_row, new_col));
 
         let end_offset = chunk.last().unwrap().len();
 
@@ -855,7 +840,7 @@ impl<'a> TextArea<'a> {
 
         self.cursor.1 += s.chars().count();
         
-        self.shift_links((row, col), (row, self.cursor.1));
+        self.shift_links_after_insert((row, col), (row, self.cursor.1));
 
         self.push_history(EditKind::InsertStr((s, None)), Pos::new(row, col, i), end_offset);
         true
@@ -871,7 +856,7 @@ impl<'a> TextArea<'a> {
                 .as_str()
                 .to_string();
             if should_yank {
-                self.yank = removed.clone().into();
+                self.yank = YankText::Piece((removed.clone(), link_ids.clone()));
             }
             self.push_history(EditKind::DeleteStr((removed, link_ids)), end, start.offset);
             return;
@@ -890,7 +875,7 @@ impl<'a> TextArea<'a> {
         }
 
         if should_yank {
-            self.yank = YankText::Chunk(deleted.clone());
+            self.yank = YankText::Chunk((deleted.clone(), link_ids.clone()));
         }
 
         let edit = if deleted.len() == 1 {
@@ -964,7 +949,30 @@ impl<'a> TextArea<'a> {
                 .drain(start_offset..end_offset)
                 .as_str()
                 .to_string();
-            self.yank = removed.clone().into();
+            
+            let start = Pos {
+                row: start_row,
+                col: start_col,
+                offset: start_offset,
+            };
+
+            let end = Pos {
+                row: start_row,
+                col: end_col,
+                offset: end_offset,
+            };
+
+            let l = self.links.iter()
+                .filter(|(_, l)| Self::link_in_range(l, &start, &end))
+                .map(|(id, _)| *id)
+                .collect::<Vec<usize>>();
+
+            let links = match l.is_empty() {
+                true => None,
+                false => Some(l),
+            };
+
+            self.yank = YankText::Piece((removed.clone(), links));
             self.push_history(
                 EditKind::DeleteStr((removed, None)),
                 Pos::new(start_row, end_col, end_offset),
@@ -1026,15 +1034,15 @@ impl<'a> TextArea<'a> {
                 false => col + chars,
             };
 
-            self.shift_links((row, start_col), (row, col));
+            self.shift_links_after_delete((row, start_col), (row, col));
 
             self.cursor = (row, col);
             self.push_history(
-                EditKind::DeleteStr((removed.clone(), link_ids)),
+                EditKind::DeleteStr((removed.clone(), link_ids.clone())),
                 Pos::new(row, col + chars, i + bytes),
                 i
             );
-            self.yank = removed.into();
+            self.yank = YankText::Piece((removed, link_ids));
             true
         } else {
             false
@@ -1145,7 +1153,7 @@ impl<'a> TextArea<'a> {
         let line = self.lines.remove(row);
 
         let link_ids = self.delete_links_in_range((row, 0), (row, std::usize::MAX));
-        self.shift_links((row + 1, 0), (row, 0));
+        self.shift_links_after_delete((row + 1, 0), (row, 0));
         self.push_history(EditKind::DeleteLine((line, link_ids)), Pos::new(row + 1, 0, 0), 0);
         
         if row == 0 && self.lines.is_empty() {
@@ -1203,7 +1211,7 @@ impl<'a> TextArea<'a> {
             false => Some(links),
         };
 
-        self.shift_links((row, col), delete_pos);
+        self.shift_links_after_delete((row, col), delete_pos);
             
         if col == 0 {
             return self.delete_newline();
@@ -1400,8 +1408,26 @@ impl<'a> TextArea<'a> {
     pub fn paste(&mut self) -> bool {
         self.delete_selection(false);
         match self.yank.clone() {
-            YankText::Piece(s) => self.insert_piece(s),
-            YankText::Chunk(c) => self.insert_chunk(c),
+            YankText::Piece((s, l)) => {
+                if let Some(link_ids) = l {
+                    for id in link_ids {
+                        let link = self.links.get_mut(&id).expect("Link to paste should be in links hashmap");
+                        link.deleted = false;
+                        link.edited = true;
+                    }
+                }
+                self.insert_piece(s)
+            }
+            YankText::Chunk((c, l)) => {
+                if let Some(link_ids) = l {
+                    for id in link_ids {
+                        let link = self.links.get_mut(&id).expect("Link to paste should be in links hashmap");
+                        link.deleted = false;
+                        link.edited = true;
+                    }
+                }
+                self.insert_chunk(c)
+            }
         }
     }
 
@@ -1554,16 +1580,40 @@ impl<'a> TextArea<'a> {
     /// ```
     pub fn copy(&mut self) {
         if let Some((start, end)) = self.take_selection_range() {
+            let l = self.links.iter()
+                .filter(|(_, l)| Self::link_in_range(l, &start, &end))
+                .map(|(id, _)| *id)
+                .collect::<Vec<usize>>();
+
+            let links = match l.is_empty() {
+                true => None,
+                false => Some(l),
+            };
+
             if start.row == end.row {
-                self.yank = self.lines[start.row][start.offset..end.offset]
-                    .to_string()
-                    .into();
-                return;
+                let text = vec![self.lines[start.row][start.offset..end.offset]
+                    .to_string()];
+
+                self.yank = YankText::Chunk((text, links));
+            } else {
+                let mut chunk = vec![self.lines[start.row][start.offset..].to_string()];
+                chunk.extend(self.lines[start.row + 1..end.row].iter().cloned());
+                chunk.push(self.lines[end.row][..end.offset].to_string());
+                self.yank = YankText::Chunk((chunk, links));
             }
-            let mut chunk = vec![self.lines[start.row][start.offset..].to_string()];
-            chunk.extend(self.lines[start.row + 1..end.row].iter().cloned());
-            chunk.push(self.lines[end.row][..end.offset].to_string());
-            self.yank = YankText::Chunk(chunk);
+
+        }
+    }
+
+    pub fn link_in_range(l: &&Link, start: &Pos, end: &Pos) -> bool {
+        if start.row == end.row && l.row == start.row {
+            l.start_col >= start.col && l.end_col <= end.col 
+        } else if l.row == start.row {
+            l.start_col >= start.col 
+        } else if l.row == end.row {
+            l.end_col <= end.col
+        } else { 
+            l.row > start.row && l.row < end.row
         }
     }
 
@@ -1595,7 +1645,7 @@ impl<'a> TextArea<'a> {
         if let Some((s, e)) = self.take_selection_range() {
             info!("selection range => s: {:?}, e: {:?}", s, e);
             let link_ids = self.delete_links_in_range((s.row, s.col), (e.row, e.col));
-            self.shift_links((e.row, e.col), (s.row, s.col));
+            self.shift_links_after_delete((e.row, e.col), (s.row, s.col));
 
             self.delete_range(s, e, link_ids, should_yank);
             return true;
@@ -1798,7 +1848,7 @@ impl<'a> TextArea<'a> {
         }
     }
 
-    pub fn shift_links(
+    pub fn shift_links_after_delete(
         &mut self,
         (start_row, start_col): (usize, usize),
         (end_row, end_col): (usize, usize)
@@ -1806,10 +1856,9 @@ impl<'a> TextArea<'a> {
         let drow = end_row as i64 - start_row as i64;
         let dcol = end_col as i64 - start_col as i64;
         
-        info!("IN SHIFT LINKS");
-        info!("{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
-        info!("{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
-        info!("{}", log_format(&(drow, dcol), "(drow, dcol)"));
+        info!("shift_links_after_delete::{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
+        info!("shift_links_after_delete::{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
+        info!("shift_links_after_delete::{}", log_format(&(drow, dcol), "(drow, dcol)"));
         for l in self.links.values_mut().filter(|l| !l.deleted) {
             info!("link before shift{}", log_format(&l, ""));
             if l.row >= end_row {
@@ -1844,7 +1893,7 @@ impl<'a> TextArea<'a> {
         }
     }
 
-    pub fn shift_links_after_edit(
+    pub fn shift_links_after_insert(
         &mut self,
         (start_row, start_col): (usize, usize),
         (end_row, end_col): (usize, usize)
@@ -1852,8 +1901,56 @@ impl<'a> TextArea<'a> {
         let drow = end_row as i64 - start_row as i64;
         let dcol = end_col as i64 - start_col as i64;
         
+        info!("shift_links_after_insert::{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
+        info!("shift_links_after_insert::{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
+        info!("shift_links_after_insert::{}", log_format(&(drow, dcol), "(drow, dcol)"));
+        for l in self.links.values_mut().filter(|l| !l.deleted) {
+            if l.edited {
+                info!("link edited: {:?}", l);
+                l.edited = false;
+            } else {
+                info!("link before shift{}", log_format(&l, ""));
+                if l.row >= start_row {
+                    if l.row == start_row && l.start_col >= end_col {
+                        info!("shifting columns");
+                        (l.start_col, l.end_col) = match dcol >= 0 {
+                            true => {
+                                (l.start_col.saturating_add(dcol as usize),
+                                l.end_col.saturating_add(dcol as usize))
+                            },
+                            false => {
+                                let positive_dcol = dcol.unsigned_abs() as usize;
+                                (l.start_col.saturating_sub(positive_dcol),
+                                l.end_col.saturating_sub(positive_dcol))
+                            },
+                        }
+                    }
+
+                    (l.row) = match drow >= 0 {
+                        true => {
+                            l.row.saturating_add(drow as usize)
+                        },
+                        false => {
+                            let positive_drow = drow.unsigned_abs() as usize;
+                            l.row.saturating_sub(positive_drow)
+                        },
+                    }
+                } 
+                info!("link after shift{}", log_format(&l, ""));
+            }
+        }
+    }
+
+    pub fn shift_links_after_edit(
+        &mut self,
+        (start_row, start_col): (usize, usize),
+        (end_row, end_col): (usize, usize)
+    ) {
+        let drow = end_row as i64 - start_row as i64;
+        let dcol = end_col as i64 - start_col as i64;
         // Dont shift links that were in the edit or are currently deleted
         for l in self.links.values_mut().filter(|l| !l.deleted && !l.edited) {
+            info!("shift_links_after_edit::link BEFORE: {:?}", l); 
             if l.row >= start_row {
                 if (l.row == end_row && l.start_col >= start_col)
                     || (l.row == start_row && end_row != start_row)
@@ -1883,6 +1980,7 @@ impl<'a> TextArea<'a> {
             } else {
                 l.toggle_edited();
             }
+            info!("shift_links_after_edit::link AFTER: {:?}", l); 
         }
     }
 
@@ -2445,7 +2543,7 @@ impl<'a> TextArea<'a> {
             .split('\n')
             .map(|s| s.strip_suffix('\r').unwrap_or(s).to_string())
             .collect();
-        self.yank = lines.into();
+        self.yank = YankText::Chunk((lines, None));
     }
 
     /// Set a regular expression pattern for text search. Setting an empty string stops the text search.
