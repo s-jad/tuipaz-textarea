@@ -21,21 +21,21 @@ use unicode_width::UnicodeWidthChar as _;
 
 #[derive(Debug, Clone)]
 enum YankText {
-    Piece((String, MaybeLinkIds)),
-    Chunk((Vec<String>, MaybeLinkIds)),
+    Piece((String, MaybeLinkIds, (usize, usize))),
+    Chunk((Vec<String>, MaybeLinkIds, (usize, usize))),
 }
 
 impl Default for YankText {
     fn default() -> Self {
-        Self::Piece((String::new(), None))
+        Self::Piece((String::new(), None, (0, 0)))
     }
 }
 
 impl ToString for YankText {
     fn to_string(&self) -> String {
         match self {
-            Self::Piece((s, _)) => s.clone(),
-            Self::Chunk((ss, _)) => ss.join("\n"),
+            Self::Piece((s, _, _)) => s.clone(),
+            Self::Chunk((ss, _, _)) => ss.join("\n"),
         }
     }
 }
@@ -777,7 +777,7 @@ impl<'a> TextArea<'a> {
     /// textarea.insert_str(", world\ngoodbye, world");
     /// assert_eq!(textarea.lines(), ["hello, world", "goodbye, world"]);
     /// ```
-    pub fn insert_str<S: AsRef<str>>(&mut self, s: S) -> bool {
+    pub fn insert_str<S: AsRef<str>>(&mut self, s: S, yank_pos: (usize, usize)) -> bool {
         let modified = self.delete_selection(false);
         let mut lines: Vec<_> = s
             .as_ref()
@@ -786,12 +786,12 @@ impl<'a> TextArea<'a> {
             .collect();
         match lines.len() {
             0 => modified,
-            1 => self.insert_piece(lines.remove(0)),
-            _ => self.insert_chunk(lines),
+            1 => self.insert_piece(lines.remove(0), yank_pos),
+            _ => self.insert_chunk(lines, yank_pos),
         }
     }
 
-    fn insert_chunk(&mut self, chunk: Vec<String>) -> bool {
+    fn insert_chunk(&mut self, chunk: Vec<String>, yank_pos: (usize, usize)) -> bool {
         debug_assert!(chunk.len() > 1, "Chunk size must be > 1: {:?}", chunk);
 
         let (row, col) = self.cursor;
@@ -809,7 +809,7 @@ impl<'a> TextArea<'a> {
             chunk[clen - 1].chars().count(),
         );
         self.cursor = (new_row, new_col);
-        self.shift_links_after_insert((row, col), (new_row, new_col));
+        self.shift_links_after_insert((row, col), (new_row, new_col), yank_pos);
 
         let end_offset = chunk.last().unwrap().len();
 
@@ -820,7 +820,7 @@ impl<'a> TextArea<'a> {
         true
     }
 
-    fn insert_piece(&mut self, s: String) -> bool {
+    fn insert_piece(&mut self, s: String, yank_pos: (usize, usize)) -> bool {
         if s.is_empty() {
             return false;
         }
@@ -843,7 +843,7 @@ impl<'a> TextArea<'a> {
 
         self.cursor.1 += s.chars().count();
         
-        self.shift_links_after_insert((row, col), (row, self.cursor.1));
+        self.shift_links_after_insert((row, col), (row, self.cursor.1), yank_pos);
 
         self.push_history(EditKind::InsertStr((s, None)), Pos::new(row, col, i), end_offset);
         true
@@ -859,7 +859,7 @@ impl<'a> TextArea<'a> {
                 .as_str()
                 .to_string();
             if should_yank {
-                self.yank = YankText::Piece((removed.clone(), link_ids.clone()));
+                self.yank = YankText::Piece((removed.clone(), link_ids.clone(), (start.row, start.col)));
             }
             self.push_history(EditKind::DeleteStr((removed, link_ids)), end, start.offset);
             return;
@@ -878,7 +878,7 @@ impl<'a> TextArea<'a> {
         }
 
         if should_yank {
-            self.yank = YankText::Chunk((deleted.clone(), link_ids.clone()));
+            self.yank = YankText::Chunk((deleted.clone(), link_ids.clone(), (start.row, start.col)));
         }
 
         let edit = if deleted.len() == 1 {
@@ -975,7 +975,7 @@ impl<'a> TextArea<'a> {
                 false => Some(l),
             };
 
-            self.yank = YankText::Piece((removed.clone(), links));
+            self.yank = YankText::Piece((removed.clone(), links, (start.row, start.col)));
             self.push_history(
                 EditKind::DeleteStr((removed, None)),
                 Pos::new(start_row, end_col, end_offset),
@@ -1045,7 +1045,7 @@ impl<'a> TextArea<'a> {
                 Pos::new(row, col + chars, i + bytes),
                 i
             );
-            self.yank = YankText::Piece((removed, link_ids));
+            self.yank = YankText::Piece((removed, link_ids, (row, start_col)));
             true
         } else {
             false
@@ -1084,7 +1084,7 @@ impl<'a> TextArea<'a> {
             .map(|c| c.width().unwrap_or(0))
             .sum();
         let len = self.tab_len - (width % self.tab_len as usize) as u8;
-        self.insert_piece(spaces(len).to_string())
+        self.insert_piece(spaces(len).to_string(), (row, col))
     }
 
     /// Insert a newline at current cursor position.
@@ -1411,7 +1411,7 @@ impl<'a> TextArea<'a> {
     pub fn paste(&mut self) -> bool {
         self.delete_selection(false);
         match self.yank.clone() {
-            YankText::Piece((s, l)) => {
+            YankText::Piece((s, l, pos)) => {
                 if let Some(link_ids) = l {
                     for id in link_ids {
                         let link = self.links.get_mut(&id).expect("Link to paste should be in links hashmap");
@@ -1419,9 +1419,9 @@ impl<'a> TextArea<'a> {
                         link.edited = true;
                     }
                 }
-                self.insert_piece(s)
+                self.insert_piece(s, pos)
             }
-            YankText::Chunk((c, l)) => {
+            YankText::Chunk((c, l, pos)) => {
                 if let Some(link_ids) = l {
                     for id in link_ids {
                         let link = self.links.get_mut(&id).expect("Link to paste should be in links hashmap");
@@ -1429,7 +1429,7 @@ impl<'a> TextArea<'a> {
                         link.edited = true;
                     }
                 }
-                self.insert_chunk(c)
+                self.insert_chunk(c, pos)
             }
         }
     }
@@ -1597,12 +1597,12 @@ impl<'a> TextArea<'a> {
                 let text = vec![self.lines[start.row][start.offset..end.offset]
                     .to_string()];
 
-                self.yank = YankText::Chunk((text, links));
+                self.yank = YankText::Chunk((text, links, (start.row, start.col)));
             } else {
                 let mut chunk = vec![self.lines[start.row][start.offset..].to_string()];
                 chunk.extend(self.lines[start.row + 1..end.row].iter().cloned());
                 chunk.push(self.lines[end.row][..end.offset].to_string());
-                self.yank = YankText::Chunk((chunk, links));
+                self.yank = YankText::Chunk((chunk, links, (start.row, start.col)));
             }
 
         }
@@ -1893,16 +1893,43 @@ impl<'a> TextArea<'a> {
         &mut self,
         (start_row, start_col): (usize, usize),
         (end_row, end_col): (usize, usize),
+        (yank_row, yank_col): (usize, usize),
     ) {
         let drow = end_row as i64 - start_row as i64;
         let dcol = end_col as i64 - start_col as i64;
         
+        let drow_yank = start_row as i64 - yank_row as i64;
+        let dcol_yank = start_col as i64 - yank_col as i64;
+
         info!("shift_links_after_insert::{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
         info!("shift_links_after_insert::{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
         info!("shift_links_after_insert::{}", log_format(&(drow, dcol), "(drow, dcol)"));
         for l in self.links.values_mut().filter(|l| !l.deleted) {
             if l.edited {
                 info!("link edited BEFORE: {:?}", l);
+                if l.row == yank_row {
+                    (l.start_col, l.end_col) = match dcol_yank >= 0 {
+                        true => {
+                            (l.start_col.saturating_add(dcol_yank as usize),
+                            l.end_col.saturating_add(dcol_yank as usize))
+                        },
+                        false => {
+                            let positive_dcol_yank = dcol_yank.unsigned_abs() as usize;
+                            (l.start_col.saturating_sub(positive_dcol_yank),
+                            l.end_col.saturating_sub(positive_dcol_yank))
+                        },
+                    };
+                } 
+
+                (l.row) = match drow_yank >= 0 {
+                    true => {
+                        l.row.saturating_add(drow_yank as usize)
+                    },
+                    false => {
+                        let positive_drow_yank = drow_yank.unsigned_abs() as usize;
+                        l.row.saturating_sub(positive_drow_yank)
+                    },
+                };
                 l.edited = false;
                 info!("link AFTER: {:?}", l);
             } else {
@@ -2540,7 +2567,7 @@ impl<'a> TextArea<'a> {
             .split('\n')
             .map(|s| s.strip_suffix('\r').unwrap_or(s).to_string())
             .collect();
-        self.yank = YankText::Chunk((lines, None));
+        self.yank = YankText::Chunk((lines, None, (0, 0)));
     }
 
     /// Set a regular expression pattern for text search. Setting an empty string stops the text search.
