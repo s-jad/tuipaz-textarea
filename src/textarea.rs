@@ -67,7 +67,7 @@ pub struct TextArea<'a> {
     style: Style,
     cursor: (usize, usize), // 0-base
     pub links: HashMap<usize, Link>,
-    pending_link: Option<(usize, usize, char)>,
+    pending_link: Option<(usize, usize)>,
     pub next_link_id: usize,
     pub new_link: bool,
     pub deleted_link_ids: Vec<usize>,
@@ -739,8 +739,10 @@ impl<'a> TextArea<'a> {
         if c == '\n' || c == '\r' {
             self.insert_newline();
             return;
-        } else if c == '[' || c == ']' {
-            self.insert_link(c);
+        } else if c == '[' {
+            self.init_link();
+        } else if c == ']' {
+            self.insert_link();
         }
 
         let (row, col) = self.cursor;
@@ -800,10 +802,11 @@ impl<'a> TextArea<'a> {
             .map(|(i, _)| i)
             .unwrap_or(line.len());
         let before = Pos::new(row, col, i);
-
+        
+        let clen = chunk.len();
         let (new_row, new_col) = (
-            row + chunk.len() - 1,
-            chunk[chunk.len() - 1].chars().count(),
+            row + clen - 1,
+            chunk[clen - 1].chars().count(),
         );
         self.cursor = (new_row, new_col);
         self.shift_links_after_insert((row, col), (new_row, new_col));
@@ -1772,31 +1775,24 @@ impl<'a> TextArea<'a> {
     ///   and the current cursor position, creates a new `Link` object with these positions,
     ///   adds it to the `links` vector, increments the `next_link_id`, and resets `pending_link` to `None`.
     ///
-    pub fn insert_link(&mut self, c: char) {
-        match self.pending_link {
-            Some(link) => {
-                // If already link pending
-                let prev_pos = (link.0, link.1);
-                let prev_c = link.2;
-                let pos = self.cursor;
+    pub fn init_link(&mut self) {
+        self.pending_link = Some((self.cursor.0, self.cursor.1));
+    }
 
-                if (prev_c == c || prev_pos == pos || prev_pos.0 != pos.0) 
-                    || (prev_c == '[' && c == ']' && prev_pos.1 > pos.1) 
-                    || (prev_c == ']' && c == '[' && prev_pos.1 < pos.1)
-                {
-                    // If double '[' or ']' or same position or [] on different rows -> reset self.pending_link
-                    self.pending_link = Some((self.cursor.0, self.cursor.1, c));
-                } else {
-                    // Otherwise create link and push to self.links
-                    let (start, end) = (pos.1.min(prev_pos.1), pos.1.max(prev_pos.1));
-                    let new_link = Link::new(self.next_link_id, self.cursor.0, start, end);
-                    self.links.insert(self.next_link_id, new_link);
-                    self.next_link_id += 1;
-                    self.pending_link = None;
-                    self.new_link = true;
-                }
+    pub fn insert_link(&mut self) {
+        if let Some(link_start) = self.pending_link {
+            if link_start.0 == self.cursor.0 && link_start.1 <= self.cursor.1  {
+                let new_link = Link::new(
+                    self.next_link_id,
+                    link_start.0,
+                    link_start.1,
+                    self.cursor.1
+                );
+                self.links.insert(self.next_link_id, new_link);
+                self.next_link_id += 1;
+                self.pending_link = None;
+                self.new_link = true;
             }
-            None => self.pending_link = Some((self.cursor.0, self.cursor.1, c)),
         }
     }
 
@@ -1896,7 +1892,7 @@ impl<'a> TextArea<'a> {
     pub fn shift_links_after_insert(
         &mut self,
         (start_row, start_col): (usize, usize),
-        (end_row, end_col): (usize, usize)
+        (end_row, end_col): (usize, usize),
     ) {
         let drow = end_row as i64 - start_row as i64;
         let dcol = end_col as i64 - start_col as i64;
@@ -1906,8 +1902,9 @@ impl<'a> TextArea<'a> {
         info!("shift_links_after_insert::{}", log_format(&(drow, dcol), "(drow, dcol)"));
         for l in self.links.values_mut().filter(|l| !l.deleted) {
             if l.edited {
-                info!("link edited: {:?}", l);
+                info!("link edited BEFORE: {:?}", l);
                 l.edited = false;
+                info!("link AFTER: {:?}", l);
             } else {
                 info!("link before shift{}", log_format(&l, ""));
                 if l.row >= start_row {
