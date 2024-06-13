@@ -251,7 +251,6 @@ impl<'a> TextArea<'a> {
     /// ```
     pub fn input(&mut self, input: impl Into<Input>) -> bool {
         let input = input.into();
-        info!("INPUT{}", log_format(&input, ""));
         let modified = match input {
             Input {
                 key: Key::Char('m'),
@@ -755,7 +754,8 @@ impl<'a> TextArea<'a> {
         } else if c == ']' {
             self.insert_link();
         } else if self.check_max_col() {
-            self.shift_last_word_newline();
+            info!("insert_char::self.cursor before shifting lines: {:?}", self.cursor);
+            self.shift_lines_after_insert();
         }
 
         let (row, col) = self.cursor;
@@ -796,6 +796,8 @@ impl<'a> TextArea<'a> {
             .split('\n')
             .map(|s| s.strip_suffix('\r').unwrap_or(s).to_string())
             .collect();
+
+        info!("insert_str:: lines.len(): {}", lines.len());
         match lines.len() {
             0 => modified,
             1 => self.insert_piece(lines.remove(0), yank_pos),
@@ -854,9 +856,8 @@ impl<'a> TextArea<'a> {
         let end_offset = i + s.len();
 
         self.cursor.1 += s.chars().count();
-        
-        self.shift_links_after_insert((row, col), (row, self.cursor.1), insert_pos);
 
+        self.shift_links_after_insert((row, col), (row, self.cursor.1), insert_pos);
         self.push_history(EditKind::InsertStr((s, None)), Pos::new(row, col, i), end_offset);
         true
     }
@@ -1098,10 +1099,40 @@ impl<'a> TextArea<'a> {
         let len = self.tab_len - (width % self.tab_len as usize) as u8;
         self.insert_piece(spaces(len).to_string(), (row, col))
     }
+    
+    fn shift_lines_after_insert(&mut self) {
+        let (start_row, start_col) = self.cursor;
+        let mut word_offset = 0;
+        let mut insert_at_end_of_line = false;
 
-    fn shift_last_word_newline(&mut self) {
+        // If already on last line of text, don't loop, just insert word on newline
+        if start_row == self.lines.len() - 1 {
+            self.shift_last_word_newline();
+            return;
+        }
+
+        // Repeat until next line isn't over max_col next line is last
+        while self.check_max_col() && self.cursor.0 + 1 < self.lines.len() {
+            (word_offset, insert_at_end_of_line) = self.shift_last_word_newline();
+            self.cursor = (self.cursor.0 + 1, 0);
+        }
+
+        if insert_at_end_of_line {
+            self.cursor = (start_row + 1, word_offset);
+        } else {
+            let max_line_col = self.lines[start_row].len() - 1;
+            self.cursor = match start_col >= max_line_col {
+                true => (start_row + 1, word_offset),
+                false => (start_row, start_col),
+            };
+        }
+    }
+
+    fn shift_last_word_newline(&mut self) -> (usize, bool) {
         let insert_at_end_of_line = self.cursor.1 as u16 >= self.max_col - 1;
         
+        let mut word_offset = 0;
+
         if insert_at_end_of_line {
             let (row, col) = self.cursor;
             let current_line = &self.lines[row];
@@ -1116,6 +1147,7 @@ impl<'a> TextArea<'a> {
                 self.insert_piece(word, (row + 1, 0));
             }
 
+            word_offset = col - word_start;
         } else {
             let (start_row, start_col) = (self.cursor.0 as u16, self.cursor.1 as u16);
             self.move_cursor(CursorMove::End);
@@ -1134,8 +1166,10 @@ impl<'a> TextArea<'a> {
                 self.insert_piece(word, (row + 1, 0));
                 self.move_cursor(CursorMove::Jump(start_row, start_col));
             }
-
+            word_offset = col - word_start;
         }
+
+        (word_offset, insert_at_end_of_line)
     }
 
     /// Insert a newline at current cursor position.
@@ -1645,10 +1679,10 @@ impl<'a> TextArea<'a> {
             };
 
             if start.row == end.row {
-                let text = vec![self.lines[start.row][start.offset..end.offset]
-                    .to_string()];
+                let text = self.lines[start.row][start.offset..end.offset]
+                    .to_string();
 
-                self.yank = YankText::Chunk((text, links, (start.row, start.col)));
+                self.yank = YankText::Piece((text, links, (start.row, start.col)));
             } else {
                 let mut chunk = vec![self.lines[start.row][start.offset..].to_string()];
                 chunk.extend(self.lines[start.row + 1..end.row].iter().cloned());
@@ -1952,12 +1986,11 @@ impl<'a> TextArea<'a> {
         let drow_yank = start_row as i64 - yank_row as i64;
         let dcol_yank = start_col as i64 - yank_col as i64;
 
-        info!("shift_links_after_insert::{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
-        info!("shift_links_after_insert::{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
-        info!("shift_links_after_insert::{}", log_format(&(drow, dcol), "(drow, dcol)"));
+        // info!("shift_links_after_insert::{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
+        // info!("shift_links_after_insert::{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
+        // info!("shift_links_after_insert::{}", log_format(&(drow, dcol), "(drow, dcol)"));
         for l in self.links.values_mut().filter(|l| !l.deleted) {
             if l.edited {
-                info!("link edited BEFORE: {:?}", l);
                 if l.row == yank_row {
                     (l.start_col, l.end_col) = match dcol_yank >= 0 {
                         true => {
@@ -1982,36 +2015,30 @@ impl<'a> TextArea<'a> {
                     },
                 };
                 l.edited = false;
-                info!("link AFTER: {:?}", l);
-            } else {
-                info!("link before shift{}", log_format(&l, ""));
-                if l.row >= start_row {
-                    if l.row == start_row && l.start_col >= end_col {
-                        info!("shifting columns");
-                        (l.start_col, l.end_col) = match dcol >= 0 {
-                            true => {
-                                (l.start_col.saturating_add(dcol as usize),
-                                l.end_col.saturating_add(dcol as usize))
-                            },
-                            false => {
-                                let positive_dcol = dcol.unsigned_abs() as usize;
-                                (l.start_col.saturating_sub(positive_dcol),
-                                l.end_col.saturating_sub(positive_dcol))
-                            },
-                        }
-                    }
-
-                    (l.row) = match drow >= 0 {
+            } else if l.row >= start_row {
+                if l.row == start_row && l.start_col >= end_col {
+                    (l.start_col, l.end_col) = match dcol >= 0 {
                         true => {
-                            l.row.saturating_add(drow as usize)
+                            (l.start_col.saturating_add(dcol as usize),
+                            l.end_col.saturating_add(dcol as usize))
                         },
                         false => {
-                            let positive_drow = drow.unsigned_abs() as usize;
-                            l.row.saturating_sub(positive_drow)
+                            let positive_dcol = dcol.unsigned_abs() as usize;
+                            (l.start_col.saturating_sub(positive_dcol),
+                            l.end_col.saturating_sub(positive_dcol))
                         },
                     }
-                } 
-                info!("link after shift{}", log_format(&l, ""));
+                }
+
+                (l.row) = match drow >= 0 {
+                    true => {
+                        l.row.saturating_add(drow as usize)
+                    },
+                    false => {
+                        let positive_drow = drow.unsigned_abs() as usize;
+                        l.row.saturating_sub(positive_drow)
+                    },
+                }
             }
         }
     }
