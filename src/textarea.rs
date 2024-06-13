@@ -834,6 +834,33 @@ impl<'a> TextArea<'a> {
         true
     }
 
+    fn prepend_next_line(&mut self, s: String, insert_pos: (usize, usize)) -> bool {
+        if s.is_empty() {
+            return false;
+        }
+
+        let (row, col) = self.cursor;
+        let line = &mut self.lines[row];
+        debug_assert!(
+            !s.contains('\n'),
+            "string given to TextArea::insert_piece must not contain newline: {:?}",
+            line,
+        );
+
+        let i = line
+            .char_indices()
+            .nth(col)
+            .map(|(i, _)| i)
+            .unwrap_or(line.len());
+        line.insert_str(i, &s);
+        let end_offset = i + s.len();
+
+        self.cursor.1 += s.chars().count();
+
+        self.shift_links_after_insert((row, col), (row, self.cursor.1), insert_pos);
+        true
+    }
+
     fn insert_piece(&mut self, s: String, insert_pos: (usize, usize)) -> bool {
         if s.is_empty() {
             return false;
@@ -858,6 +885,7 @@ impl<'a> TextArea<'a> {
         self.cursor.1 += s.chars().count();
 
         self.shift_links_after_insert((row, col), (row, self.cursor.1), insert_pos);
+        self.shift_lines_after_insert();
         self.push_history(EditKind::InsertStr((s, None)), Pos::new(row, col, i), end_offset);
         true
     }
@@ -1107,13 +1135,17 @@ impl<'a> TextArea<'a> {
 
         // If already on last line of text, don't loop, just insert word on newline
         if start_row == self.lines.len() - 1 {
-            self.shift_last_word_newline();
+            while self.check_max_col() {
+                self.shift_last_word_newline();
+            }
             return;
         }
 
         // Repeat until next line isn't over max_col next line is last
-        while self.check_max_col() && self.cursor.0 + 1 < self.lines.len() {
-            (word_offset, insert_at_end_of_line) = self.shift_last_word_newline();
+        while self.check_max_col() && self.cursor.0 + 1 <= self.lines.len() {
+            while self.check_max_col() {
+                (word_offset, insert_at_end_of_line) = self.shift_last_word_newline();
+            }
             self.cursor = (self.cursor.0 + 1, 0);
         }
 
@@ -1142,9 +1174,9 @@ impl<'a> TextArea<'a> {
             
             if self.lines.len() <= row + 1 {
                 self.insert_newline();
-                self.insert_piece(word, self.cursor);
+                self.prepend_next_line(word, self.cursor);
             } else {
-                self.insert_piece(word, (row + 1, 0));
+                self.prepend_next_line(word, (row + 1, 0));
             }
 
             word_offset = col - word_start;
@@ -1159,11 +1191,11 @@ impl<'a> TextArea<'a> {
             if self.lines.len() <= row + 1 {
                 self.cursor = (row, word_start);
                 self.insert_newline();
-                self.insert_piece(word, self.cursor);
+                self.prepend_next_line(word, self.cursor);
                 self.move_cursor(CursorMove::Jump(start_row, start_col));
             } else {
                 self.cursor = (row + 1, 0);
-                self.insert_piece(word, (row + 1, 0));
+                self.prepend_next_line(word, (row + 1, 0));
                 self.move_cursor(CursorMove::Jump(start_row, start_col));
             }
             word_offset = col - word_start;
