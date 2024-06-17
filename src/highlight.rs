@@ -1,7 +1,7 @@
 use crate::links::Link;
 use crate::ratatui::style::Style;
 use crate::ratatui::text::Span;
-use crate::util::{num_digits, spaces, log_format};
+use crate::util::{num_digits, spaces};
 use log::info;
 #[cfg(feature = "ratatui")]
 use ratatui::text::Line;
@@ -18,6 +18,7 @@ enum Boundary {
     Select(Style),
     #[cfg(feature = "search")]
     Search(Style),
+    Hop((Style, usize)),
     End,
 }
 
@@ -28,6 +29,7 @@ impl Boundary {
                 Boundary::Cursor(_) => 4,
                 #[cfg(feature = "search")]
                 Boundary::Search(_) => 3,
+                Boundary::Hop(_) => 3,
                 Boundary::Select(_) => 2,
                 Boundary::Link(_) => 1,
                 Boundary::End => 0,
@@ -43,7 +45,15 @@ impl Boundary {
             Boundary::Select(s) => Some(*s),
             #[cfg(feature = "search")]
             Boundary::Search(s) => Some(*s),
+            Boundary::Hop((s, _)) => Some(*s),
             Boundary::End => None,
+        }
+    }
+
+    fn idx(&self) -> Option<usize> {
+        match self {
+            Boundary::Hop((_, idx)) => Some(*idx),
+            _ => None,
         }
     }
 }
@@ -52,15 +62,25 @@ struct DisplayTextBuilder {
     tab_len: u8,
     width: usize,
     mask: Option<char>,
+    hop_mask: Option<String>,
 }
 
 impl DisplayTextBuilder {
-    fn new(tab_len: u8, mask: Option<char>) -> Self {
+    fn new(tab_len: u8, mask: Option<char>, hop_mask: Option<String>) -> Self {
         Self {
             tab_len,
             width: 0,
             mask,
+            hop_mask,
         }
+    }
+
+    fn set_hop_mask(&mut self, s: String) {
+        self.hop_mask = Some(s);
+    }
+
+    fn clear_hop_mask(&mut self) {
+        self.hop_mask = None;
     }
 
     fn build<'s>(&mut self, s: &'s str) -> Cow<'s, str> {
@@ -68,6 +88,11 @@ impl DisplayTextBuilder {
             // Note: We don't need to track width on masking text since width of tab character is fixed
             let masked = iter::repeat(ch).take(s.chars().count()).collect();
             return Cow::Owned(masked);
+        }
+
+        if let Some(hop) = &self.hop_mask {
+            let h = hop.to_owned();
+            return Cow::Owned(h);
         }
 
         let tab = spaces(self.tab_len);
@@ -164,6 +189,25 @@ impl<'a> LineHighlighter<'a> {
         }
     }
 
+    pub fn hop(
+        &mut self, 
+        matches: impl Iterator<Item = (usize, usize)>, 
+        style: Style, 
+        mut count: usize
+    ) -> (Vec<(usize, usize)>, usize) {
+        let mut start_vec = vec![];
+        for (start, end) in matches {
+            if start != end {
+                count += 1;
+                self.boundaries.push((Boundary::Hop((style, count)), start));
+                self.boundaries.push((Boundary::End, end));
+                start_vec.push((start, count));
+            }
+        }
+
+        (start_vec, count)
+    }
+
     pub fn links(&mut self, links: &HashMap<usize, Link>, row: usize, style: Style) {
         for link in links.values().filter(|link| !link.deleted) {
             if link.row == row {
@@ -218,7 +262,7 @@ impl<'a> LineHighlighter<'a> {
             select_at_end,
             select_style,
         } = self;
-        let mut builder = DisplayTextBuilder::new(tab_len, mask);
+        let mut builder = DisplayTextBuilder::new(tab_len, mask, None);
 
         if boundaries.is_empty() {
             let built = builder.build(line);
@@ -239,19 +283,30 @@ impl<'a> LineHighlighter<'a> {
         });
 
         let mut style = style_begin;
+        let mut hop_idx: Option<usize> = None;
         let mut start = 0;
-        let mut stack = vec![];
+        let mut style_stack = vec![];
+
         for (next_boundary, end) in boundaries {
             if start < end {
+                if let Some(idx) = hop_idx {
+                    let hm = format!("{:<2}", idx);
+                    builder.set_hop_mask(hm);
+                    hop_idx = None;
+                }
                 spans.push(Span::styled(builder.build(&line[start..end]), style));
+                builder.clear_hop_mask();
             }
             
             style = if let Some(s) = next_boundary.style() {
-                stack.push(style);
+                style_stack.push(style);
                 s
             } else {
-                stack.pop().unwrap_or(style_begin)
+                style_stack.pop().unwrap_or(style_begin)
             };
+
+            hop_idx = next_boundary.idx();
+            
             start = end;
         }
 
@@ -278,12 +333,12 @@ mod tests {
     use unicode_width::UnicodeWidthStr as _;
 
     fn build(text: &'static str, tab: u8, mask: Option<char>) -> Cow<'static, str> {
-        DisplayTextBuilder::new(tab, mask).build(text)
+        DisplayTextBuilder::new(tab, mask, None).build(text)
     }
 
     #[track_caller]
     fn build_with_offset(offset: usize, text: &'static str, tab: u8) -> Cow<'static, str> {
-        let mut b = DisplayTextBuilder::new(tab, None);
+        let mut b = DisplayTextBuilder::new(tab, None, None);
         b.width = offset;
         let built = b.build(text);
         let want = offset + built.as_ref().width();
