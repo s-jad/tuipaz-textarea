@@ -3,6 +3,7 @@ use log::info;
 use crate::cursor::CursorMove;
 use crate::highlight::LineHighlighter;
 use crate::history::{Edit, EditKind, History, MaybeLinkIds};
+use crate::hop::Hop;
 use crate::input::{Input, Key};
 use crate::links::Link;
 use crate::ratatui::layout::Alignment;
@@ -82,6 +83,9 @@ pub struct TextArea<'a> {
     yank: YankText,
     #[cfg(feature = "search")]
     search: Search,
+    pub hop: Hop, // TODO! only pub for debug pursposes
+    pub hop_pending: bool,
+    pub hopping: bool,
     alignment: Alignment,
     pub(crate) placeholder: String,
     pub(crate) placeholder_style: Style,
@@ -203,6 +207,9 @@ impl<'a> TextArea<'a> {
             yank: YankText::default(),
             #[cfg(feature = "search")]
             search: Search::default(),
+            hop: Hop::default(),
+            hop_pending: false,
+            hopping: false,
             alignment: Alignment::Left,
             placeholder: String::new(),
             placeholder_style: Style::default().fg(Color::DarkGray),
@@ -657,6 +664,7 @@ impl<'a> TextArea<'a> {
             input,
         );
 
+
         modified
     }
 
@@ -721,7 +729,6 @@ impl<'a> TextArea<'a> {
     }
 
     fn push_history(&mut self, kind: EditKind, before: Pos, after_offset: usize) {
-        info!("Inside push history::edit kind: {:?} ", kind);
         let (row, col) = self.cursor;
         let after = Pos::new(row, col, after_offset);
         let edit = Edit::new(kind, before, after);
@@ -754,11 +761,13 @@ impl<'a> TextArea<'a> {
         } else if c == ']' {
             self.insert_link();
         } else if self.check_max_col() {
-            info!("insert_char::self.cursor before shifting lines: {:?}", self.cursor);
+            info!("INSERT CHAR INSIDE self.check_max_col");
+            info!("cursor: self.cursor: {:?}", self.cursor);
             self.shift_lines_after_insert();
         }
 
         let (row, col) = self.cursor;
+        info!("INSERT CHAR AFTER self.check_max_col");
         self.shift_links_same_row(row, (col, col + 1));
 
         let line = &mut self.lines[row];
@@ -843,7 +852,7 @@ impl<'a> TextArea<'a> {
         let line = &mut self.lines[row];
         debug_assert!(
             !s.contains('\n'),
-            "string given to TextArea::insert_piece must not contain newline: {:?}",
+            "string given to TextArea::prepend_next_line must not contain newline: {:?}",
             line,
         );
 
@@ -853,7 +862,6 @@ impl<'a> TextArea<'a> {
             .map(|(i, _)| i)
             .unwrap_or(line.len());
         line.insert_str(i, &s);
-        let end_offset = i + s.len();
 
         self.cursor.1 += s.chars().count();
 
@@ -862,6 +870,7 @@ impl<'a> TextArea<'a> {
     }
 
     fn insert_piece(&mut self, s: String, insert_pos: (usize, usize)) -> bool {
+        info!("INSERT PIECE");
         if s.is_empty() {
             return false;
         }
@@ -881,9 +890,20 @@ impl<'a> TextArea<'a> {
             .unwrap_or(line.len());
         line.insert_str(i, &s);
         let end_offset = i + s.len();
+        
+        let char_count = s.chars().count();
+        info!("inserting piece: end_offset: {}, char_count: {}", end_offset, char_count);
 
-        self.cursor.1 += s.chars().count();
-
+        if end_offset + char_count >= self.max_col as usize {
+           self.cursor = (self.cursor.0 + 1, 0);
+        } else {
+            self.cursor.1 += char_count;
+        }
+        info!("inserting piece\nstart: (row, col): ({}, {})
+            \nend: (row, col): ({}, {})
+            \ninsert_pos: (row, col): ({}, {})",
+            row, col, row, self.cursor.1, insert_pos.0, insert_pos.1
+        );
         self.shift_links_after_insert((row, col), (row, self.cursor.1), insert_pos);
         self.shift_lines_after_insert();
         self.push_history(EditKind::InsertStr((s, None)), Pos::new(row, col, i), end_offset);
@@ -1129,12 +1149,13 @@ impl<'a> TextArea<'a> {
     }
     
     fn shift_lines_after_insert(&mut self) {
+        info!("SHIFT LINES AFTER INSERT");
         let (start_row, start_col) = self.cursor;
-        let mut word_offset = 0;
         let mut insert_at_end_of_line = false;
-
+        
         // If already on last line of text, don't loop, just insert word on newline
         if start_row == self.lines.len() - 1 {
+            info!("start_row == self.lines.len() - 1");
             while self.check_max_col() {
                 self.shift_last_word_newline();
             }
@@ -1142,21 +1163,26 @@ impl<'a> TextArea<'a> {
         }
 
         // Repeat until next line isn't over max_col next line is last
-        while self.check_max_col() && self.cursor.0 + 1 <= self.lines.len() {
+        while self.check_max_col() && self.cursor.0 < self.lines.len() {
+            info!("loop shifting link: self.cursor: {:?}", self.cursor);
             while self.check_max_col() {
-                (word_offset, insert_at_end_of_line) = self.shift_last_word_newline();
+                (_, insert_at_end_of_line) = self.shift_last_word_newline();
             }
+
             self.cursor = (self.cursor.0 + 1, 0);
         }
-
+        
+        info!("insert_at_end_of_line: {}", insert_at_end_of_line);
         if insert_at_end_of_line {
-            self.cursor = (start_row + 1, word_offset);
+            self.cursor = (start_row + 1, 0);
         } else {
             let max_line_col = self.lines[start_row].len() - 1;
+            info!("max_line_col <= start_col: {}", start_col >= max_line_col);
             self.cursor = match start_col >= max_line_col {
-                true => (start_row + 1, word_offset),
+                true => (start_row + 1, 0),
                 false => (start_row, start_col),
             };
+            info!("self.cursor: {:?}", self.cursor);
         }
     }
 
@@ -1164,14 +1190,31 @@ impl<'a> TextArea<'a> {
         let insert_at_end_of_line = self.cursor.1 as u16 >= self.max_col - 1;
         
         let mut word_offset = 0;
-
+        
         if insert_at_end_of_line {
             let (row, col) = self.cursor;
             let current_line = &self.lines[row];
-            let word_start = find_word_start_backward(current_line, col).expect("Should find word_start");
-            let word = self.lines[row].drain(word_start..).as_str().to_owned();
+            let mut word_start = find_word_start_backward(current_line, col).expect("Should find word_start");
+            let mut word = String::new(); 
+            info!("insert at end of line::self.cursor {:?}", self.cursor);
             self.cursor = (row, word_start);
             
+            if let Some(id) = self.in_link((row, word_start)) {
+                let l = self.links.get_mut(&id)
+                    .expect("Link should exist at with start_col == word_start");
+                
+                word.push_str(self.lines[row].drain(l.start_col..).as_str());
+                word_start = l.start_col;
+                let end_offset = l.end_col - l.start_col;
+                l.start_col = 0;
+                l.end_col = end_offset;
+                l.row += 1;
+                l.edited = true;
+            } else {
+                word.push_str(self.lines[row].drain(word_start..).as_str());
+            }
+            info!("insert at end of line::word {:?}", word);
+
             if self.lines.len() <= row + 1 {
                 self.insert_newline();
                 self.prepend_next_line(word, self.cursor);
@@ -1185,9 +1228,27 @@ impl<'a> TextArea<'a> {
             self.move_cursor(CursorMove::End);
             let (row, col) = self.cursor;
             let current_line = &self.lines[row];
-            let word_start = find_word_start_backward(current_line, col).expect("Should find word_start");
-            let word = self.lines[row].drain(word_start..).as_str().to_owned();
+            let mut word_start = find_word_start_backward(current_line, col).expect("Should find word_start");
+            let mut word = String::new();
             
+            info!("insert NOT at end of line::self.cursor {:?}", self.cursor);
+            if let Some(id) = self.in_link((row, word_start)) {
+                let l = self.links.get_mut(&id)
+                    .expect("Link should exist at with start_col == word_start");
+                
+                word.push_str(self.lines[row].drain(l.start_col..).as_str());
+                word_start = l.start_col;
+
+                let end_offset = l.end_col - l.start_col;
+                l.start_col = 0;
+                l.end_col = end_offset;
+                l.row += 1;
+                l.edited = true;
+            } else {
+                word.push_str(self.lines[row].drain(word_start..).as_str());
+            }
+            info!("insert NOT at end of line::word {:?}", word);
+
             if self.lines.len() <= row + 1 {
                 self.cursor = (row, word_start);
                 self.insert_newline();
@@ -1871,6 +1932,20 @@ impl<'a> TextArea<'a> {
         if let Some(matches) = self.search.matches(line) {
             hl.search(matches, self.search.style);
         }
+        
+        let mut count = self.hop.get_count();
+        if self.hopping {
+            let mut match_vec = vec![];
+
+            if let Some(matches) = self.hop.matches(line) {
+                (match_vec, count) = hl.hop(matches, self.hop.style, count);
+            }
+
+            if self.hop_pending {
+                self.hop.set_match_indexes(match_vec, row);
+            }
+        } 
+        self.hop.set_count(count);
 
         hl.links(&self.links, row, self.link_style);
 
@@ -1948,8 +2023,9 @@ impl<'a> TextArea<'a> {
 
     pub fn shift_links_same_row(&mut self, row: usize, (start_col, end_col): (usize, usize)) {
         let dcol = end_col as i64 - start_col as i64;
-
+        info!("SHIFT LINKS SAME ROW");
         for l in self.links.values_mut().filter(|l| l.row == row && l.start_col >= start_col && !l.deleted) {
+            info!("link BEFORE: {:?}", l);
             l.start_col = match (l.start_col as i64 + dcol) as usize {
                 std::usize::MAX => 0,
                 n => n
@@ -1958,6 +2034,7 @@ impl<'a> TextArea<'a> {
                 std::usize::MAX => 0,
                 n => n
             };
+            info!("link AFTER: {:?}", l);
         }
     }
 
@@ -2012,17 +2089,22 @@ impl<'a> TextArea<'a> {
         (end_row, end_col): (usize, usize),
         (yank_row, yank_col): (usize, usize),
     ) {
+        info!("SHIFT LINKS AFTER INSERT");
+        info!("cursor: {:?}", self.cursor);
+        info!("max_col: {}", self.max_col);
         let drow = end_row as i64 - start_row as i64;
         let dcol = end_col as i64 - start_col as i64;
         
         let drow_yank = start_row as i64 - yank_row as i64;
         let dcol_yank = start_col as i64 - yank_col as i64;
 
-        // info!("shift_links_after_insert::{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
-        // info!("shift_links_after_insert::{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
-        // info!("shift_links_after_insert::{}", log_format(&(drow, dcol), "(drow, dcol)"));
+        info!("shift_links_after_insert::{}", log_format(&(start_row, end_row), "(start_row, end_row)"));
+        info!("shift_links_after_insert::{}", log_format(&(start_col, end_col), "(start_col, end_col)"));
+        info!("shift_links_after_insert::{}", log_format(&(drow, dcol), "(drow, dcol)"));
         for l in self.links.values_mut().filter(|l| !l.deleted) {
+            info!("link BEFORE: {:?}", l);
             if l.edited {
+                info!("link edited");
                 if l.row == yank_row {
                     (l.start_col, l.end_col) = match dcol_yank >= 0 {
                         true => {
@@ -2048,7 +2130,9 @@ impl<'a> TextArea<'a> {
                 };
                 l.edited = false;
             } else if l.row >= start_row {
-                if l.row == start_row && l.start_col >= end_col {
+                // EDIT: Changed end_col to start_col
+                info!("link NOT edited");
+                if l.row == start_row && l.start_col >= start_col {
                     (l.start_col, l.end_col) = match dcol >= 0 {
                         true => {
                             (l.start_col.saturating_add(dcol as usize),
@@ -2072,6 +2156,7 @@ impl<'a> TextArea<'a> {
                     },
                 }
             }
+            info!("link AFTER: {:?}", l);
         }
     }
 
@@ -2080,6 +2165,7 @@ impl<'a> TextArea<'a> {
         (start_row, start_col): (usize, usize),
         (end_row, end_col): (usize, usize)
     ) {
+        info!("SHIFT LINKS AFTER EDIT");
         let drow = end_row as i64 - start_row as i64;
         let dcol = end_col as i64 - start_col as i64;
         // Dont shift links that were in the edit or are currently deleted
@@ -2869,6 +2955,39 @@ impl<'a> TextArea<'a> {
     #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
     pub fn set_search_style(&mut self, style: Style) {
         self.search.style = style;
+    }
+
+    pub fn hop_pattern(&self) -> Option<&regex::Regex> {
+        self.hop.pat.as_ref()
+    }
+
+    pub fn clear_hop(&mut self) {
+        self.hopping = false;
+        self.hop_pending = false;
+        self.hop.clear_pattern();
+        self.hop.clear_match_indexes();
+        self.hop.reset_count();
+    }
+
+    pub fn init_hop(&mut self) {
+        self.hopping = true;
+        self.hop_pending = true;
+    }
+
+    pub fn set_hop_pattern(&mut self, query: impl AsRef<str>) -> Result<(), regex::Error> {
+        self.hop.set_pattern(query.as_ref())
+    }
+
+    pub fn hop_style(&self) -> Style {
+        self.search.style
+    }
+
+    pub fn hop_to_idx(&mut self, idx: usize) {
+        info!("hop_to_idx::self.hop: {:?}", self.hop);
+        if let Some(match_idx) = self.hop.match_indexes.borrow().iter().find(|mi| mi.idx == idx) {
+            info!("hop_to_idx: found match! {:?}", match_idx);
+            self.cursor = match_idx.pos;
+        } 
     }
 
     /// Scroll the textarea. See [`Scrolling`] for the argument.
