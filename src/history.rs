@@ -30,35 +30,25 @@ impl EditKind {
         match self {
             EditKind::InsertChar((c, link_vec)) => {
                 lines[before.row].insert(before.offset, *c);
-                info!("EditKind::InsertChar::link_vec: {:?}", link_vec);
                 if let Some(l) = link_vec {
                     for id in l {
                         let link = links.get_mut(id).expect("link should be present");
-                        info!("EditKind::InsertChar::edited link: BEFORE {:?}", link);
                         link.toggle_edited();
                         link.toggle_deleted();
-                        info!("EditKind::InsertChar::edited link: AFTER {:?}", link);
                     } 
                 }
             }
             EditKind::DeleteChar((_, link_vec)) => {
-                info!("EditKind::DeleteChar::link_vec: {:?}", link_vec);
-                info!("EditKind::DeleteChar::lines BEFORE: {:?}", lines[before.row]);
                 lines[before.row].remove(after.offset);
-                info!("EditKind::DeleteChar::lines AFTER: {:?}", lines[before.row]);
                 if let Some(l) = link_vec {
-                    info!("EditKind::DeleteChar: recognised link_vec has members");
                     for id in l {
                         let link = links.get_mut(id).expect("link should be present");
-                        info!("EditKind::DeleteChar::edited link: BEFORE {:?}", link);
                         link.toggle_deleted();
-                        info!("EditKind::DeleteChar::edited link: AFTER {:?}", link);
                     } 
                 }
             }
             EditKind::InsertLine((line, link_vec)) => {
                 lines.insert(before.row, line.to_string());
-                info!("EditKind::InsertLine::link_vec: {:?}", link_vec);
                 if let Some(l) = link_vec {
                     for id in l {
                         let link = links.get_mut(id).expect("link should be present");
@@ -68,7 +58,6 @@ impl EditKind {
                 }
             }
             EditKind::DeleteLine((_, link_vec)) => {
-                info!("EditKind::DeleteLine::link_vec: {:?}", link_vec);
                 lines.remove(before.row);
                 if let Some(l) = link_vec {
                     for id in l {
@@ -79,7 +68,6 @@ impl EditKind {
             }
             EditKind::InsertStr((s, link_vec)) => {
                 lines[before.row].insert_str(before.offset, s.as_str());
-                info!("EditKind::InsertStr::link_vec: {:?}", link_vec);
                 if let Some(l) = link_vec {
                     for id in l {
                         let link = links.get_mut(id).expect("link should be present");
@@ -90,7 +78,6 @@ impl EditKind {
             }
             EditKind::DeleteStr((s, link_vec)) => {
                 lines[after.row].drain(after.offset..after.offset + s.len());
-                info!("EditKind::DeleteStr::link_vec: {:?}", link_vec);
                 if let Some(l) = link_vec {
                     for id in l {
                         let link = links.get_mut(id).expect("link should be present");
@@ -113,7 +100,6 @@ impl EditKind {
 
                 // Handle middle lines of chunk
                 lines.splice(next_row..next_row, c[1..c.len() - 1].iter().cloned());
-                info!("EditKind::InsertChunk::link_vec: {:?}", link_vec);
                 if let Some(l) = link_vec {
                     for id in l {
                         let link = links.get_mut(id).expect("link should be present");
@@ -124,8 +110,6 @@ impl EditKind {
             }
             EditKind::DeleteChunk((c, link_vec)) => {
                 debug_assert!(c.len() > 1, "Chunk size must be > 1: {:?}", c);
-
-                info!("EditKind::DeleteChunk::link_vec: {:?}", link_vec);
                 // Remove middle lines of chunk
                 let mut last_line = lines
                     .drain(after.row + 1..after.row + c.len())
@@ -193,12 +177,10 @@ impl Edit {
     }
 
     pub fn redo(&mut self, lines: &mut Vec<String>, links: &mut HashMap<usize, Link>) {
-        info!("Inside history.rs Edit::redo:kind {:?}", self.kind);
         self.kind.apply(lines, links, &self.before, &self.after);
     }
 
     pub fn undo(&mut self, lines: &mut Vec<String>, links: &mut HashMap<usize, Link>) {
-        info!("Inside history.rs Edit::undo:kind {:?}", self.kind);
         self.kind.invert().apply(lines, links, &self.after, &self.before); // Undo is redo of inverted edit
     }
 
@@ -254,8 +236,6 @@ impl History {
             return None;
         }
         let edit = &mut self.edits[self.index];
-        info!("Inside history.rs redo::edit: {:?}", edit);
-        info!("Inside history.rs redo::links: {:?}", links);
         edit.redo(lines, links);
         self.index += 1;
         Some((edit.cursor_before(), edit.cursor_after()))
