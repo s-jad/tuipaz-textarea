@@ -7,6 +7,7 @@
 mod cursor;
 mod highlight;
 mod history;
+mod hop;
 mod input;
 mod links;
 mod scroll;
