@@ -882,22 +882,30 @@ impl<'a> TextArea<'a> {
             "string given to TextArea::insert_piece must not contain newline: {:?}",
             line,
         );
-
+        
+        let line_len = line.len();
+        let s_len = s.len();
         let i = line
             .char_indices()
             .nth(col)
             .map(|(i, _)| i)
-            .unwrap_or(line.len());
-        line.insert_str(i, &s);
-        let end_offset = i + s.len();
-        
-        let char_count = s.chars().count();
-        info!("inserting piece: end_offset: {}, char_count: {}", end_offset, char_count);
+            .unwrap_or(line_len);
+        let end_offset = i + s_len;
+        let overhang = (line_len + s_len) as i32 - self.max_col as i32;
 
-        if end_offset + char_count >= self.max_col as usize {
-           self.cursor = (self.cursor.0 + 1, 0);
+        info!("insert_piece\ni: {:?}\nend_offset: {:?}\noverhang: {}\nself.max_col: {}", i, end_offset, overhang, self.max_col);
+
+        if overhang >= 0 {
+            let fits = self.max_col as usize - i;
+            info!("s fits: {}", &s[..fits]);
+            info!("s doesnt fit: {}", &s[fits..]);
+            line.insert_str(i, &s[..fits]);
+            self.cursor = (self.cursor.0 + 1, 0);
+            line.insert_str(0, &s[fits..]);
+            self.cursor = (self.cursor.0, s.len() - fits);
         } else {
-            self.cursor.1 += char_count;
+            line.insert_str(i, &s);
+            self.cursor.1 += s_len;
         }
         info!("inserting piece\nstart: (row, col): ({}, {})
             \nend: (row, col): ({}, {})
@@ -1317,11 +1325,20 @@ impl<'a> TextArea<'a> {
         if row == 0 {
             return false;
         }
+    
+        let line_end = self.lines[row].len();
+        let prev_line_end = self.lines[row - 1].len();
+        let mut to_drain = self.max_col as usize - prev_line_end - 1;
 
-        let line = self.lines.remove(row);
+        let line = if prev_line_end == 0 || line_end == 0 {
+            self.lines.remove(row)
+        } else {
+            to_drain = find_word_start_backward(&self.lines[row], to_drain).expect("Should find word");
+            to_drain = std::cmp::min(to_drain, line_end);
+            self.lines[row].drain(..to_drain).collect::<String>()
+        };
+
         let prev_line = &mut self.lines[row - 1];
-        let prev_line_end = prev_line.len();
-
         self.cursor = (row - 1, prev_line.chars().count());
         prev_line.push_str(&line);
         self.push_history(EditKind::DeleteNewline, Pos::new(row, 0, 0), prev_line_end);
