@@ -14,6 +14,7 @@ mod scroll;
 #[cfg(feature = "search")]
 mod search;
 mod textarea;
+mod textinput;
 mod util;
 mod widget;
 mod word;
@@ -31,3 +32,5 @@ pub use input::{Input, Key};
 pub use links::Link;
 pub use scroll::Scrolling;
 pub use textarea::TextArea;
+pub use textarea::TextAreaTheme;
+pub use textinput::TextInput;
