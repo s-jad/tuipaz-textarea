@@ -78,8 +78,6 @@ pub struct TextArea<'a> {
     cursor_line_style: Style,
     line_number_style: Option<Style>,
     pub(crate) viewport: Viewport,
-    cursor_style: Style,
-    link_style: Style,
     yank: YankText,
     #[cfg(feature = "search")]
     search: Search,
@@ -92,7 +90,217 @@ pub struct TextArea<'a> {
     mask: Option<char>,
     selection_start: Option<(usize, usize)>,
     select_style: Style,
+    cursor_style: Style,
+    link_style: Style,
     max_col: u16,
+}
+
+#[derive(Clone, Debug)]
+pub struct TextInput<'a> {
+    text: String,
+    block: Option<Block<'a>>,
+    style: Style,
+    pub cursor: (usize, usize), // 0-base
+    tab_len: u8,
+    pub(crate) viewport: Viewport,
+    alignment: Alignment,
+    pub(crate) placeholder: String,
+    pub(crate) placeholder_style: Style,
+    cursor_style: Style,
+    max_col: u16,
+}
+
+impl<'a> TextInput<'a> {
+    pub fn new(text: String, max_col: u16, text_clr: Color, placeholder: String) -> Self {
+        let style = Style::new().fg(text_clr);
+
+        Self {
+            text,
+            block: None,
+            style,
+            cursor: (0, 0),
+            tab_len: 4,
+            viewport: Viewport::default(),
+            alignment: Alignment::Left,
+            placeholder,
+            placeholder_style: style,
+            cursor_style: Style::default().add_modifier(Modifier::REVERSED),
+            max_col,
+        }
+    }
+
+    pub fn input(&mut self, input: impl Into<Input>) -> bool {
+        let input = input.into();
+        let modified = match input {
+            Input {
+                key: Key::Char(c),
+                ctrl: false,
+                alt: false,
+                ..
+            } => {
+                self.insert_char(c);
+                true
+            }
+            Input {
+                key: Key::Tab,
+                ctrl: false,
+                alt: false,
+                ..
+            } => self.insert_tab(),
+            Input {
+                key: Key::Backspace,
+                ctrl: false,
+                alt: false,
+                ..
+            } => self.delete_char(),
+            Input {
+                key: Key::Delete,
+                ctrl: false,
+                alt: false,
+                ..
+            } => self.delete_next_char(),
+            Input {
+                key: Key::Backspace,
+                ctrl: false,
+                alt: true,
+                ..
+            } => self.delete_word(),
+            Input {
+                key: Key::Delete,
+                ctrl: false,
+                alt: true,
+                ..
+            } => self.delete_next_word(),
+            _ => false,
+        };
+
+        // Check invariants
+        debug_assert!(!self.text.is_empty(), "no text after {:?}", input);
+        let (r, c) = self.cursor;
+        debug_assert!(
+            self.text.chars().count() >= c,
+            "cursor {:?} exceeds max col {} at char {:?} after {:?}",
+            self.cursor,
+            self.text.chars().count(),
+            self.text,
+            input,
+        );
+
+        modified
+    }
+
+    pub fn insert_char(&mut self, c: char) {
+        let (_, col) = self.cursor;
+        let line = &mut self.text;
+        let i = line
+            .char_indices()
+            .nth(col)
+            .map(|(i, _)| i)
+            .unwrap_or(line.len());
+        line.insert(i, c);
+        self.cursor.1 += 1;
+    }
+
+    pub fn delete_char(&mut self) -> bool {
+        let (_, col) = self.cursor;
+        if col == 0 {
+            return false;
+        }
+        let line = &mut self.text;
+        if let Some((offset, c)) = line.char_indices().nth(col - 1) {
+            line.remove(offset);
+            self.cursor.1 -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn delete_next_char(&mut self) -> bool {
+        let (row, col) = self.cursor;
+        if col + 1 >= self.text.len() {
+            return false;
+        }
+        self.cursor = (row, col + 1);
+        self.delete_char()
+    }
+
+    pub fn delete_word(&mut self) -> bool {
+        let (_, col) = self.cursor;
+        if let Some(word_start) = find_word_start_backward(&self.text, col) {
+            self.text.drain(word_start..=col);
+            true
+        } else if col > 0 {
+            self.text.drain(0..=col);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn delete_next_word(&mut self) -> bool {
+        let (_, start_col) = self.cursor;
+        let line = &self.text;
+        if let Some(word_end) = find_word_end_forward(line, start_col) {
+            self.text.drain(start_col..=word_end);
+            true
+        } else {
+            let line_end = line.chars().count();
+            if start_col < line_end {
+                self.text.drain(start_col..=line_end);
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    pub fn insert_tab(&mut self) -> bool {
+        if self.tab_len == 0 {
+            return false;
+        }
+
+        let (_, col) = self.cursor;
+        let width: usize = self.text
+            .chars()
+            .take(col)
+            .map(|c| c.width().unwrap_or(0))
+            .sum();
+        let len = self.tab_len - (width % self.tab_len as usize) as u8;
+        self.text.insert_str(col, spaces(len));
+        true
+    }
+
+    pub fn clear(&mut self) {
+        self.text = "".to_owned();
+    }
+
+    pub fn get_text(&self) -> &str {
+        &self.text
+    }
+
+    pub fn set_block(&mut self, block: Block<'a>) {
+        self.block = Some(block);
+    }
+    pub fn set_placeholder_text(&mut self, placeholder: &str) {
+        self.placeholder = placeholder.to_owned();
+    }
+}
+
+pub struct TextAreaTheme {
+    pub text: Color,
+    pub select: Color,
+    pub links: Color,
+}
+
+impl Default for TextAreaTheme {
+    fn default() -> Self {
+        Self { 
+            text: Color::default(),
+            select: Color::Red,
+            links: Color::Blue,
+        }
+    }
 }
 
 /// Convert any iterator whose elements can be converted into [`String`] into [`TextArea`]. Each [`String`] element is
@@ -125,6 +333,7 @@ where
             i.into_iter().map(|s| s.into()).collect::<Vec<String>>(),
             HashMap::new(),
             140,
+            TextAreaTheme::default(),
         )
     }
 }
@@ -162,7 +371,13 @@ impl<'a, S: Into<String>> FromIterator<S> for TextArea<'a> {
 /// ```
 impl<'a> Default for TextArea<'a> {
     fn default() -> Self {
-        Self::new(vec![String::new()], HashMap::new(), 140)
+        let theme = TextAreaTheme {
+            text: Color::default(),
+            select: Color::Magenta,
+            links: Color::Blue,
+        };
+
+        Self::new(vec![String::new()], HashMap::new(), 140, theme)
     }
 }
 
@@ -176,7 +391,7 @@ impl<'a> TextArea<'a> {
     /// let textarea = TextArea::new(lines);
     /// assert_eq!(textarea.lines(), ["hello", "...", "goodbye"]);
     /// ```
-    pub fn new(mut lines: Vec<String>, links: HashMap<usize, Link>, max_col: u16) -> Self {
+    pub fn new(mut lines: Vec<String>, links: HashMap<usize, Link>, max_col: u16, theme: TextAreaTheme) -> Self {
         if lines.is_empty() {
             lines.push(String::new());
         }
@@ -185,11 +400,13 @@ impl<'a> TextArea<'a> {
             Some(id) => id + 1,
             None => 0,
         };
+
+        let style = Style::new().fg(theme.text);
         
         Self {
             lines,
             block: None,
-            style: Style::default(),
+            style,
             cursor: (0, 0),
             links,
             pending_link: None,
@@ -202,8 +419,6 @@ impl<'a> TextArea<'a> {
             cursor_line_style: Style::default(),
             line_number_style: None,
             viewport: Viewport::default(),
-            cursor_style: Style::default().add_modifier(Modifier::REVERSED),
-            link_style: Style::default().add_modifier(Modifier::BOLD).fg(Color::Red),
             yank: YankText::default(),
             #[cfg(feature = "search")]
             search: Search::default(),
@@ -215,7 +430,9 @@ impl<'a> TextArea<'a> {
             placeholder_style: Style::default().fg(Color::DarkGray),
             mask: None,
             selection_start: None,
-            select_style: Style::default().bg(Color::LightBlue),
+            select_style: Style::default().bg(theme.select),
+            cursor_style: Style::default().add_modifier(Modifier::REVERSED),
+            link_style: Style::default().add_modifier(Modifier::BOLD).fg(theme.links),
             max_col,
         }
     }
@@ -739,8 +956,16 @@ impl<'a> TextArea<'a> {
         self.lines[self.cursor.0].len() as u16
     }
 
+    fn get_prev_line_len(&self) -> u16 {
+        self.lines[self.cursor.0 - 1].len() as u16
+    }
+
     fn check_current_row_overhang(&self) -> bool {
         self.get_current_line_len() >= self.max_col - 1
+    }
+
+    fn check_prev_row_space(&self) -> bool {
+        self.get_prev_line_len() < self.max_col - 1
     }
 
     /// Insert a single character at current cursor position.
@@ -1390,6 +1615,7 @@ impl<'a> TextArea<'a> {
         }
 
         let (row, col) = self.cursor;
+        info!("delete_char::self.cursor BEFORE: {:?}", (row, col));
 
         let delete_pos = match (row > 0, col > 0) {
             (true, false) => {
@@ -1413,9 +1639,11 @@ impl<'a> TextArea<'a> {
 
             
         if col == 0 {
+            info!("delete_char -> delete_newline");
             return self.delete_newline();
         }
-
+        
+        info!("delete_char::self.cursor AFTER shift_lines_after_delete: {:?}", (row, col));
         self.shift_links_after_delete((row, col), delete_pos, 0);
 
         let line = &mut self.lines[row];
@@ -2037,6 +2265,25 @@ impl<'a> TextArea<'a> {
         }
         // No links
         None
+    }
+
+    pub fn links_in_row_before_cursor(&self, cpos: (usize, usize)) -> Option<Vec<usize>> {
+        let mut id_vec = vec![];
+        info!("links_in_row_before_cursor::cpos: {:?}", cpos);
+        for (id, link) in self.links.iter().filter(|(_, link)| !link.deleted) {
+            info!("links_in_row_before_cursor::link: {:?}", link);
+            if cpos.0 != link.row {
+                continue;
+            } else if cpos.1 >= link.end_col {
+                id_vec.push(*id);
+            }
+        }
+        
+        info!("links_in_row_before_cursor::id_vec: {:?}", id_vec);
+        match id_vec.is_empty() {
+            true => None,
+            false => Some(id_vec),
+        }
     }
 
     pub fn links_in_row_after_cursor(&self, cpos: (usize, usize)) -> Option<Vec<usize>> {
@@ -3103,10 +3350,17 @@ impl<'a> TextArea<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    
+    const THEME_COLOR: Color = Color::Red;
+    const THEME: TextAreaTheme = TextAreaTheme {
+        text: THEME_COLOR,
+        select: THEME_COLOR,
+        links: THEME_COLOR,
+    };
 
     #[test]
     fn test_delete_piece_includes_link() {
-        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140);
+        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11, edited: false, deleted: false });
 
         textarea.delete_piece(5, 10);
@@ -3116,7 +3370,7 @@ mod tests {
 
     #[test]
     fn test_delete_entire_link() {
-        let mut textarea = TextArea::new(vec!["[Link]".into()], HashMap::new(), 140);
+        let mut textarea = TextArea::new(vec!["[Link]".into()], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5, edited: false , deleted: false });
 
         textarea.delete_piece(0, 5);
@@ -3126,7 +3380,7 @@ mod tests {
 
     #[test]
     fn test_delete_part_of_link() {
-        let mut textarea = TextArea::new(vec!["[Example Link]".into()], HashMap::new(), 140);
+        let mut textarea = TextArea::new(vec!["[Example Link]".into()], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 21, edited: false , deleted: false });
 
         textarea.delete_piece(7, 9);
@@ -3136,7 +3390,7 @@ mod tests {
 
     #[test]
     fn test_links_shift_on_insert_char() {
-        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140);
+        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(0, 5));
         textarea.insert_char(' ');
@@ -3147,7 +3401,7 @@ mod tests {
 
     #[test]
     fn test_links_shift_on_delete_char() {
-        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140);
+        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(0, 5));
         textarea.delete_char();
@@ -3161,7 +3415,7 @@ mod tests {
         let mut textarea = TextArea::new(vec![
             "Line without link.".into(),
             "[Link]".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
 
         textarea.delete_piece(0, 5);
@@ -3173,7 +3427,7 @@ mod tests {
     fn test_deletion_range_does_not_delete_links_but_shifts_it() {
         let mut textarea = TextArea::new(vec![
             "Before [link] and after.".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.delete_piece(0, 6);
@@ -3187,7 +3441,7 @@ mod tests {
         let mut textarea = TextArea::new(vec![
             "[Link]".into(),
             "Some text below.".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(1, 0));
         textarea.insert_newline();
@@ -3206,7 +3460,7 @@ mod tests {
             "Some text above".into(),
             "[Link]".into(),
             "Some text below.".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
 
         textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(2, 0));
@@ -3226,7 +3480,7 @@ mod tests {
             "Some text above".into(),
             "[Link]".into(),
             "Some text below.".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
 
         textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(2, 0));
@@ -3246,7 +3500,7 @@ mod tests {
     fn test_link_full_row_selection_deletion() {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 0));
@@ -3260,7 +3514,7 @@ mod tests {
     fn test_link_full_link_selection_deletion() {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 7));
@@ -3274,7 +3528,7 @@ mod tests {
     fn test_link_partial_link_selection_deletion() {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 6));
@@ -3288,7 +3542,7 @@ mod tests {
     fn test_link_shift_after_selection_deletion_same_row() {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 0));
@@ -3304,7 +3558,7 @@ mod tests {
             "Text above 1".into(),
             "Text above 2".into(),
             "Before [link] after".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
 
         textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12, edited: false , deleted: false });
 
@@ -3321,7 +3575,7 @@ mod tests {
             "Text above 1".into(),
             "Text above 2".into(),
             "Before [link] after".into()
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
 
         textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12, edited: false , deleted: false });
 
@@ -3338,7 +3592,7 @@ mod tests {
             "Before [link] after".into(),
             "Text below 1".into(),
             "Text below 2".into(),
-        ], HashMap::new(), 140);
+        ], HashMap::new(), 140, THEME);
 
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
@@ -3351,7 +3605,7 @@ mod tests {
 
     #[test]
     fn test_delete_newline_no_links() {
-        let mut textarea = TextArea::new(vec!["Line 1".into(), "Line 2".into()], HashMap::new(), 140);
+        let mut textarea = TextArea::new(vec!["Line 1".into(), "Line 2".into()], HashMap::new(), 140, THEME);
         textarea.cursor = (1, 0);
 
         assert!(textarea.delete_newline());
@@ -3360,7 +3614,7 @@ mod tests {
 
     #[test]
     fn test_delete_newline_with_links_next_line() {
-        let mut textarea = TextArea::new(vec!["Line 1".into(), "[Link]".into()], HashMap::new(), 140);
+        let mut textarea = TextArea::new(vec!["Line 1".into(), "[Link]".into()], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.cursor = (1, 0);
 
@@ -3371,7 +3625,7 @@ mod tests {
 
     #[test]
     fn test_delete_newline_with_links_both_lines() {
-        let mut textarea = TextArea::new(vec!["[Link1]".into(), "[Link2]".into()], HashMap::new(), 140);
+        let mut textarea = TextArea::new(vec!["[Link1]".into(), "[Link2]".into()], HashMap::new(), 140, THEME);
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 6, edited: false , deleted: false });
         textarea.links.insert(1, Link { id: 1, row: 1, start_col: 0, end_col: 6, edited: false , deleted: false });
         textarea.cursor = (1, 0);
