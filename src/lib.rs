@@ -11,7 +11,6 @@ mod hop;
 mod input;
 mod links;
 mod scroll;
-#[cfg(feature = "search")]
 mod search;
 mod textarea;
 mod textinput;
