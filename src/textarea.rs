@@ -2,7 +2,7 @@ use log::info;
 
 use crate::cursor::CursorMove;
 use crate::highlight::LineHighlighter;
-use crate::history::{Edit, EditKind, History, MaybeLinkIds};
+use crate::history::{Edit, EditKind, History};
 use crate::hop::Hop;
 use crate::input::{Input, Key};
 use crate::links::Link;
@@ -10,7 +10,6 @@ use crate::ratatui::layout::Alignment;
 use crate::ratatui::style::{Color, Modifier, Style};
 use crate::ratatui::widgets::{Block, Widget};
 use crate::scroll::Scrolling;
-#[cfg(feature = "search")]
 use crate::search::Search;
 use crate::util::{spaces, Pos, log_format};
 use crate::widget::{Renderer, Viewport};
@@ -20,10 +19,20 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthChar as _;
 
+#[derive(Debug, Clone, Copy)]
+pub struct YankedLink {
+    id: usize,
+    row_offset: usize,
+    start_col_offset: usize,
+    end_col_offset: usize,
+}
+
+pub type MaybeLinks = Option<Vec<YankedLink>>;
+
 #[derive(Debug, Clone)]
 enum YankText {
-    Piece((String, MaybeLinkIds, (usize, usize))),
-    Chunk((Vec<String>, MaybeLinkIds, (usize, usize))),
+    Piece((String, MaybeLinks, (usize, usize))),
+    Chunk((Vec<String>, MaybeLinks, (usize, usize))),
 }
 
 impl Default for YankText {
@@ -79,7 +88,6 @@ pub struct TextArea<'a> {
     line_number_style: Option<Style>,
     pub(crate) viewport: Viewport,
     yank: YankText,
-    #[cfg(feature = "search")]
     search: Search,
     pub hop: Hop, // TODO! only pub for debug pursposes
     pub hop_pending: bool,
@@ -93,198 +101,6 @@ pub struct TextArea<'a> {
     cursor_style: Style,
     link_style: Style,
     max_col: u16,
-}
-
-#[derive(Clone, Debug)]
-pub struct TextInput<'a> {
-    text: String,
-    block: Option<Block<'a>>,
-    style: Style,
-    pub cursor: (usize, usize), // 0-base
-    tab_len: u8,
-    pub(crate) viewport: Viewport,
-    alignment: Alignment,
-    pub(crate) placeholder: String,
-    pub(crate) placeholder_style: Style,
-    cursor_style: Style,
-    max_col: u16,
-}
-
-impl<'a> TextInput<'a> {
-    pub fn new(text: String, max_col: u16, text_clr: Color, placeholder: String) -> Self {
-        let style = Style::new().fg(text_clr);
-
-        Self {
-            text,
-            block: None,
-            style,
-            cursor: (0, 0),
-            tab_len: 4,
-            viewport: Viewport::default(),
-            alignment: Alignment::Left,
-            placeholder,
-            placeholder_style: style,
-            cursor_style: Style::default().add_modifier(Modifier::REVERSED),
-            max_col,
-        }
-    }
-
-    pub fn input(&mut self, input: impl Into<Input>) -> bool {
-        let input = input.into();
-        let modified = match input {
-            Input {
-                key: Key::Char(c),
-                ctrl: false,
-                alt: false,
-                ..
-            } => {
-                self.insert_char(c);
-                true
-            }
-            Input {
-                key: Key::Tab,
-                ctrl: false,
-                alt: false,
-                ..
-            } => self.insert_tab(),
-            Input {
-                key: Key::Backspace,
-                ctrl: false,
-                alt: false,
-                ..
-            } => self.delete_char(),
-            Input {
-                key: Key::Delete,
-                ctrl: false,
-                alt: false,
-                ..
-            } => self.delete_next_char(),
-            Input {
-                key: Key::Backspace,
-                ctrl: false,
-                alt: true,
-                ..
-            } => self.delete_word(),
-            Input {
-                key: Key::Delete,
-                ctrl: false,
-                alt: true,
-                ..
-            } => self.delete_next_word(),
-            _ => false,
-        };
-
-        // Check invariants
-        debug_assert!(!self.text.is_empty(), "no text after {:?}", input);
-        let (r, c) = self.cursor;
-        debug_assert!(
-            self.text.chars().count() >= c,
-            "cursor {:?} exceeds max col {} at char {:?} after {:?}",
-            self.cursor,
-            self.text.chars().count(),
-            self.text,
-            input,
-        );
-
-        modified
-    }
-
-    pub fn insert_char(&mut self, c: char) {
-        let (_, col) = self.cursor;
-        let line = &mut self.text;
-        let i = line
-            .char_indices()
-            .nth(col)
-            .map(|(i, _)| i)
-            .unwrap_or(line.len());
-        line.insert(i, c);
-        self.cursor.1 += 1;
-    }
-
-    pub fn delete_char(&mut self) -> bool {
-        let (_, col) = self.cursor;
-        if col == 0 {
-            return false;
-        }
-        let line = &mut self.text;
-        if let Some((offset, c)) = line.char_indices().nth(col - 1) {
-            line.remove(offset);
-            self.cursor.1 -= 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn delete_next_char(&mut self) -> bool {
-        let (row, col) = self.cursor;
-        if col + 1 >= self.text.len() {
-            return false;
-        }
-        self.cursor = (row, col + 1);
-        self.delete_char()
-    }
-
-    pub fn delete_word(&mut self) -> bool {
-        let (_, col) = self.cursor;
-        if let Some(word_start) = find_word_start_backward(&self.text, col) {
-            self.text.drain(word_start..=col);
-            true
-        } else if col > 0 {
-            self.text.drain(0..=col);
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn delete_next_word(&mut self) -> bool {
-        let (_, start_col) = self.cursor;
-        let line = &self.text;
-        if let Some(word_end) = find_word_end_forward(line, start_col) {
-            self.text.drain(start_col..=word_end);
-            true
-        } else {
-            let line_end = line.chars().count();
-            if start_col < line_end {
-                self.text.drain(start_col..=line_end);
-                true
-            } else {
-                false
-            }
-        }
-    }
-
-    pub fn insert_tab(&mut self) -> bool {
-        if self.tab_len == 0 {
-            return false;
-        }
-
-        let (_, col) = self.cursor;
-        let width: usize = self.text
-            .chars()
-            .take(col)
-            .map(|c| c.width().unwrap_or(0))
-            .sum();
-        let len = self.tab_len - (width % self.tab_len as usize) as u8;
-        self.text.insert_str(col, spaces(len));
-        true
-    }
-
-    pub fn clear(&mut self) {
-        self.text = "".to_owned();
-    }
-
-    pub fn get_text(&self) -> &str {
-        &self.text
-    }
-
-    pub fn set_block(&mut self, block: Block<'a>) {
-        self.block = Some(block);
-    }
-    pub fn set_placeholder_text(&mut self, placeholder: &str) {
-        self.placeholder = placeholder.to_owned();
-    }
 }
 
 pub struct TextAreaTheme {
@@ -420,7 +236,6 @@ impl<'a> TextArea<'a> {
             line_number_style: None,
             viewport: Viewport::default(),
             yank: YankText::default(),
-            #[cfg(feature = "search")]
             search: Search::default(),
             hop: Hop::default(),
             hop_pending: false,
@@ -1118,9 +933,12 @@ impl<'a> TextArea<'a> {
         true
     }
 
-    fn delete_range(&mut self, start: Pos, end: Pos, link_ids: MaybeLinkIds, should_yank: bool) {
+    fn delete_range(&mut self, start: Pos, end: Pos, deleted_links: MaybeLinks, should_yank: bool) {
         info!("INSIDE delete_range");
         self.cursor = (start.row, start.col);
+
+        let link_ids = deleted_links.as_ref()
+            .map(|dl| dl.iter().map(|l| l.id).collect::<Vec<usize>>());
 
         if start.row == end.row {
             let removed = self.lines[start.row]
@@ -1128,7 +946,7 @@ impl<'a> TextArea<'a> {
                 .as_str()
                 .to_string();
             if should_yank {
-                self.yank = YankText::Piece((removed.clone(), link_ids.clone(), (start.row, start.col)));
+                self.yank = YankText::Piece((removed.clone(), deleted_links, (start.row, start.col)));
             }
             self.push_history(EditKind::DeleteStr((removed, link_ids)), end, start.offset);
             return;
@@ -1147,7 +965,7 @@ impl<'a> TextArea<'a> {
         }
 
         if should_yank {
-            self.yank = YankText::Chunk((deleted.clone(), link_ids.clone(), (start.row, start.col)));
+            self.yank = YankText::Chunk((deleted.clone(), deleted_links, (start.row, start.col)));
         }
 
         let edit = if deleted.len() == 1 {
@@ -1234,46 +1052,57 @@ impl<'a> TextArea<'a> {
                 offset: end_offset,
             };
 
-            let l = self.links.iter()
-                .filter(|(_, l)| Self::link_in_range(l, &start, &end))
-                .map(|(id, _)| *id)
-                .collect::<Vec<usize>>();
+                let l = self.links.iter()
+                    .filter(|(_, l)| Self::link_in_range(l, &start, &end))
+                    .map(|(id, _)| {
+                        let l = self.links.get(id).expect("deleted link will exist");
 
-            let links = match l.is_empty() {
-                true => None,
-                false => Some(l),
-            };
+                        let row_offset = l.row - start.row;
+                        let (start_col_offset, end_col_offset) = if row_offset == 0 {
+                            (l.start_col - start.col, l.end_col - start.col)
+                        } else {
+                            (l.start_col, l.end_col)
+                        };
 
-            self.yank = YankText::Piece((removed.clone(), links, (start.row, start.col)));
-            self.push_history(
-                EditKind::DeleteStr((removed, None)),
-                Pos::new(start_row, end_col, end_offset),
-                start_offset
-            );
-            return true;
-        }
+                        YankedLink { id: *id, row_offset, start_col_offset, end_col_offset }
+                    })
+                    .collect::<Vec<YankedLink>>();
 
-        let mut r = start_row + 1;
-        let mut offset = 0;
-        let mut col = 0;
+                let deleted_links = match l.is_empty() {
+                    true => None,
+                    false => Some(l),
+                };
 
-        while r < self.lines.len() {
-            let line = &self.lines[r];
-            if let Some((o, c)) = find_end(line) {
-                offset = o;
-                col = c;
-                break;
+                self.yank = YankText::Piece((removed.clone(), deleted_links, (start.row, start.col)));
+                self.push_history(
+                    EditKind::DeleteStr((removed, None)),
+                    Pos::new(start_row, end_col, end_offset),
+                    start_offset
+                );
+                return true;
             }
-            r += 1;
+
+            let mut r = start_row + 1;
+            let mut offset = 0;
+            let mut col = 0;
+
+            while r < self.lines.len() {
+                let line = &self.lines[r];
+                if let Some((o, c)) = find_end(line) {
+                    offset = o;
+                    col = c;
+                    break;
+                }
+                r += 1;
+            }
+
+            let start = Pos::new(start_row, start_col, start_offset);
+            let end = Pos::new(r, col, offset);
+            self.delete_range(start, end, None, true);
+            true
         }
 
-        let start = Pos::new(start_row, start_col, start_offset);
-        let end = Pos::new(r, col, offset);
-        self.delete_range(start, end, None, true);
-        true
-    }
-
-    fn delete_piece(&mut self, col: usize, chars: usize) -> bool {
+        fn delete_piece(&mut self, col: usize, chars: usize) -> bool {
         info!("INSIDE delete_piece");
         if chars == 0 {
             return false;
@@ -1299,8 +1128,11 @@ impl<'a> TextArea<'a> {
             let removed = line.drain(i..i + bytes).as_str().to_string();
             let line_empty = line.is_empty(); 
 
-            let link_ids = self.delete_links_in_range((row, col), (row, col + chars));
+            let deleted_links = self.delete_links_in_range((row, col), (row, col + chars));
             
+            let link_ids = deleted_links.as_ref()
+                .map(|dl| dl.iter().map(|l| l.id).collect::<Vec<usize>>());
+
             let start_col = match line_empty {
                 true => col,
                 false => col + chars,
@@ -1310,11 +1142,11 @@ impl<'a> TextArea<'a> {
 
             self.cursor = (row, col);
             self.push_history(
-                EditKind::DeleteStr((removed.clone(), link_ids.clone())),
+                EditKind::DeleteStr((removed.clone(), link_ids)),
                 Pos::new(row, col + chars, i + bytes),
                 i
             );
-            self.yank = YankText::Piece((removed, link_ids, (row, start_col)));
+            self.yank = YankText::Piece((removed, deleted_links, (row, start_col)));
             true
         } else {
             false
@@ -1577,8 +1409,11 @@ impl<'a> TextArea<'a> {
         
         let line = self.lines.remove(row);
 
-        let link_ids = self.delete_links_in_range((row, 0), (row, std::usize::MAX));
+        let deleted_links = self.delete_links_in_range((row, 0), (row, std::usize::MAX));
         self.shift_links_after_delete((row + 1, 0), (row, 0), 0);
+
+        let link_ids = deleted_links.map(|dl| dl.iter().map(|yl| yl.id).collect::<Vec<usize>>());
+
         self.push_history(EditKind::DeleteLine((line, link_ids)), Pos::new(row + 1, 0, 0), 0);
         
         if row == 0 && self.lines.is_empty() {
@@ -1636,7 +1471,6 @@ impl<'a> TextArea<'a> {
             true => None,
             false => Some(links),
         };
-
             
         if col == 0 {
             info!("delete_char -> delete_newline");
@@ -1839,20 +1673,56 @@ impl<'a> TextArea<'a> {
         match self.yank.clone() {
             YankText::Piece((s, l, pos)) => {
                 if let Some(link_ids) = l {
-                    for id in link_ids {
-                        let link = self.links.get_mut(&id).expect("Link to paste should be in links hashmap");
-                        link.deleted = false;
-                        link.edited = true;
+                    for yanked_link in link_ids {
+                        let link = self.links.get_mut(&yanked_link.id).expect("Link to paste should be in links hashmap");
+                        
+                        match link.deleted {
+                            true => {
+                                link.deleted = false;
+                                link.edited = true;
+                                link.row = pos.0 + yanked_link.row_offset;
+                                link.start_col = pos.1 + yanked_link.start_col_offset;
+                                link.end_col = pos.1 + yanked_link.end_col_offset;
+                            },
+                            false => {
+                                let copied_link = Link::new(
+                                    self.next_link_id, 
+                                    pos.0 + yanked_link.row_offset, 
+                                    pos.1 + yanked_link.start_col_offset, 
+                                    pos.1 + yanked_link.end_col_offset,
+                                );
+                                self.links.insert(copied_link.id, copied_link);
+                                self.next_link_id += 1;
+                            },
+                        }
                     }
                 }
                 self.insert_piece(s, pos)
             }
             YankText::Chunk((c, l, pos)) => {
                 if let Some(link_ids) = l {
-                    for id in link_ids {
-                        let link = self.links.get_mut(&id).expect("Link to paste should be in links hashmap");
-                        link.deleted = false;
-                        link.edited = true;
+                    for yanked_link in link_ids {
+                        let link = self.links.get_mut(&yanked_link.id).expect("Link to paste should be in links hashmap");
+                        
+                        match link.deleted {
+                            true => {
+                                link.deleted = false;
+                                link.edited = true;
+                                link.row = pos.0 + yanked_link.row_offset;
+                                link.start_col = pos.1 + yanked_link.start_col_offset;
+                                link.end_col = pos.1 + yanked_link.end_col_offset;
+                            },
+                            false => {
+                                let copied_link = Link::new(
+                                    self.next_link_id, 
+                                    pos.0 + yanked_link.row_offset, 
+                                    pos.1 + yanked_link.start_col_offset, 
+                                    pos.1 + yanked_link.end_col_offset,
+                                );
+                                self.links.insert(copied_link.id, copied_link);
+                                self.next_link_id += 1;
+                            },
+                        }
                     }
                 }
                 self.insert_chunk(c, pos)
@@ -2011,13 +1881,24 @@ impl<'a> TextArea<'a> {
         if let Some((start, end)) = self.take_selection_range() {
             let l = self.links.iter()
                 .filter(|(_, l)| Self::link_in_range(l, &start, &end))
-                .map(|(id, _)| *id)
-                .collect::<Vec<usize>>();
+                .map(|(id, l)| {
+                    let row_offset = l.row - start.row;
+                    let (start_col_offset, end_col_offset) = if row_offset == 0 {
+                        (l.start_col - start.col, l.end_col - start.col)
+                    } else {
+                        (l.start_col, l.end_col)
+                    };
+
+                    YankedLink { id: *id, row_offset, start_col_offset, end_col_offset }
+                })
+                .collect::<Vec<YankedLink>>();
 
             let links = match l.is_empty() {
                 true => None,
                 false => Some(l),
             };
+            
+            info!("textarea::copy::links: {:?}", links);
 
             if start.row == end.row {
                 let text = self.lines[start.row][start.offset..end.offset]
@@ -2073,10 +1954,10 @@ impl<'a> TextArea<'a> {
         info!("INSIDE delete_selection");
         if let Some((s, e)) = self.take_selection_range() {
             info!("selection range => s: {:?}, e: {:?}", s, e);
-            let link_ids = self.delete_links_in_range((s.row, s.col), (e.row, e.col));
+            let deleted_links = self.delete_links_in_range((s.row, s.col), (e.row, e.col));
             self.shift_links_after_delete((e.row, e.col), (s.row, s.col), 0);
-
-            self.delete_range(s, e, link_ids, should_yank);
+            
+            self.delete_range(s, e, deleted_links, should_yank);
             return true;
         }
         false
@@ -2176,7 +2057,6 @@ impl<'a> TextArea<'a> {
             hl.cursor_line(self.cursor.1, self.cursor_line_style);
         }
 
-        #[cfg(feature = "search")]
         if let Some(matches) = self.search.matches(line) {
             hl.search(matches, self.search.style);
         }
@@ -2549,23 +2429,40 @@ impl<'a> TextArea<'a> {
         }
     }
 
-    pub fn delete_links_in_range(&mut self, start: (usize, usize), end: (usize, usize)) -> MaybeLinkIds {
+    pub fn delete_links_in_range(&mut self, start: (usize, usize), end: (usize, usize)) -> MaybeLinks {
         let mut deleted_links = Vec::new();
-        for (id, link) in self.links.clone().iter() {
+        for (id, link) in self.links.iter() {
             if (link.row < start.0 || link.row > end.0)
                 || (link.row == start.0 && link.end_col < start.1)
                 || (link.row == end.0 && link.start_col > end.1)
             {
                 continue;
             } else {
-                info!("deleting: {}", log_format(&link, ""));
-                deleted_links.push(self.delete_link(*id));
+                let row_offset = link.row - start.0;
+                let (start_col_offset, end_col_offset) = if row_offset == 0 {
+                    (link.start_col - start.1, link.end_col - start.1)
+                } else {
+                    (link.start_col, link.end_col)
+                };
+                
+                
+                let deleted_link = YankedLink {
+                    id: *id,
+                    row_offset,
+                    start_col_offset,
+                    end_col_offset,
+                };
+
+                deleted_links.push(deleted_link);
             }
         }
 
         if deleted_links.is_empty() {
             None
         } else {
+            for dl in deleted_links.iter() {
+                self.delete_link(dl.id);
+            }
             Some(deleted_links)
         }
     }
@@ -3101,8 +2998,7 @@ impl<'a> TextArea<'a> {
     /// // Invalid search pattern
     /// assert!(textarea.set_search_pattern("(hello").is_err());
     /// ```
-    #[cfg(feature = "search")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
+
     pub fn set_search_pattern(&mut self, query: impl AsRef<str>) -> Result<(), regex::Error> {
         self.search.set_pattern(query.as_ref())
     }
@@ -3120,14 +3016,11 @@ impl<'a> TextArea<'a> {
     /// assert!(textarea.search_pattern().is_some());
     /// assert_eq!(textarea.search_pattern().unwrap().as_str(), "hello+");
     /// ```
-    #[cfg(feature = "search")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
+
     pub fn search_pattern(&self) -> Option<&regex::Regex> {
         self.search.pat.as_ref()
     }
 
-    #[cfg(feature = "search")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
     pub fn clear_search(&mut self) {
         self.search.clear_pattern();
     }
@@ -3173,8 +3066,7 @@ impl<'a> TextArea<'a> {
     /// let match_found = textarea.search_forward(false);
     /// assert!(!match_found);
     /// ```
-    #[cfg(feature = "search")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
+
     pub fn search_forward(&mut self, match_cursor: bool) -> bool {
         if let Some(cursor) = self.search.forward(&self.lines, self.cursor, match_cursor) {
             self.cursor = cursor;
@@ -3217,8 +3109,7 @@ impl<'a> TextArea<'a> {
     /// let match_found = textarea.search_back(false);
     /// assert!(!match_found);
     /// ```
-    #[cfg(feature = "search")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
+
     pub fn search_back(&mut self, match_cursor: bool) -> bool {
         if let Some(cursor) = self.search.back(&self.lines, self.cursor, match_cursor) {
             self.cursor = cursor;
@@ -3238,8 +3129,7 @@ impl<'a> TextArea<'a> {
     ///
     /// assert_eq!(textarea.search_style(), Style::default().bg(Color::Blue));
     /// ```
-    #[cfg(feature = "search")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
+
     pub fn search_style(&self) -> Style {
         self.search.style
     }
@@ -3257,8 +3147,7 @@ impl<'a> TextArea<'a> {
     ///
     /// assert_eq!(textarea.search_style(), red_bg);
     /// ```
-    #[cfg(feature = "search")]
-    #[cfg_attr(docsrs, doc(cfg(feature = "search")))]
+
     pub fn set_search_style(&mut self, style: Style) {
         self.search.style = style;
     }
