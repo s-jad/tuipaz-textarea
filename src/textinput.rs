@@ -183,6 +183,10 @@ impl<'a> TextInput<'a> {
         self.cursor_style = style;
     }
 
+    pub fn set_text_style(&mut self, text_clr: Color) {
+        self.style = Style::default().fg(text_clr);
+    }
+
     pub fn block<'s>(&'s self) -> Option<&'s Block<'a>> {
         self.block.as_ref()
     }
