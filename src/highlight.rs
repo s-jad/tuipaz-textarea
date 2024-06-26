@@ -16,7 +16,6 @@ enum Boundary {
     Cursor(Style),
     Link(Style),
     Select(Style),
-    #[cfg(feature = "search")]
     Search(Style),
     Hop((Style, usize)),
     End,
@@ -27,7 +26,6 @@ impl Boundary {
         fn rank(b: &Boundary) -> u8 {
             match b {
                 Boundary::Cursor(_) => 4,
-                #[cfg(feature = "search")]
                 Boundary::Search(_) => 3,
                 Boundary::Hop(_) => 3,
                 Boundary::Select(_) => 2,
@@ -43,7 +41,6 @@ impl Boundary {
             Boundary::Cursor(s) => Some(*s),
             Boundary::Link(s) => Some(*s),
             Boundary::Select(s) => Some(*s),
-            #[cfg(feature = "search")]
             Boundary::Search(s) => Some(*s),
             Boundary::Hop((s, _)) => Some(*s),
             Boundary::End => None,
@@ -179,7 +176,6 @@ impl<'a> LineHighlighter<'a> {
         self.style_begin = style;
     }
 
-    #[cfg(feature = "search")]
     pub fn search(&mut self, matches: impl Iterator<Item = (usize, usize)>, style: Style) {
         for (start, end) in matches {
             if start != end {
@@ -491,7 +487,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "search")]
     #[test]
     fn into_spans_search() {
         let tests = [
@@ -609,7 +604,6 @@ mod tests {
                 },
                 &[("a", LINE), ("b", SEL), ("c", CUR), ("d", SEL), ("e", LINE)][..],
             ),
-            #[cfg(feature = "search")]
             (
                 "cursor + selection + search",
                 {
