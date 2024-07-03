@@ -1517,7 +1517,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["ac"]);
     /// ```
     pub fn delete_next_char(&mut self) -> bool {
-        info!("INSIDE delete_next_char");
+        info!("DELETE_NEXT_CHAR");
         if self.delete_selection(false) {
             info!("delete_next_char::delete_selection");
             return true;
@@ -1549,7 +1549,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["ab"]);
     /// ```
     pub fn delete_line_by_end(&mut self) -> bool {
-        info!("INSIDE delete_line_by_end");
+        info!("DELETE_LINE_BY_END");
         if self.delete_selection(false) {
             info!("delete_line_by_end::delete_selection");
             return true;
@@ -1579,7 +1579,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["cde"]);
     /// ```
     pub fn delete_line_by_head(&mut self) -> bool {
-        info!("INSIDE delete_line_by_head");
+        info!("DELETE_LINE_BY_HEAD");
         if self.delete_selection(false) {
             info!("delete_line_by_head::delete_selection");
             return true;
@@ -1610,7 +1610,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), ["aaa "]);
     /// ```
     pub fn delete_word(&mut self) -> bool {
-        info!("INSIDE delete_word");
+        info!("DELETE_WORD");
         if self.delete_selection(false) {
             return true;
         }
@@ -1642,7 +1642,7 @@ impl<'a> TextArea<'a> {
     /// assert_eq!(textarea.lines(), [" ccc"]);
     /// ```
     pub fn delete_next_word(&mut self) -> bool {
-        info!("INSIDE delete_next_word");
+        info!("DELETE_NEXT_WORD");
         if self.delete_selection(false) {
             return true;
         }
@@ -1679,7 +1679,6 @@ impl<'a> TextArea<'a> {
     /// ```
     pub fn paste(&mut self) -> bool {
         self.delete_selection(false);
-        info!("textarea::paste::links BEFORE: {:?}", self.links);
         let (row, col) = self.cursor;
         match self.yank.clone() {
             YankText::Piece((s, l, _)) => {
@@ -1690,7 +1689,6 @@ impl<'a> TextArea<'a> {
                         
                         match link.deleted {
                             true => {
-                                info!("link was deleted: {:?}", link);
                                 link.deleted = false;
                                 link.edited = true;
                                 link.row = row + yanked_link.row;
@@ -1698,7 +1696,6 @@ impl<'a> TextArea<'a> {
                                 link.end_col = col + yanked_link.end_col;
                             },
                             false => {
-                                info!("link was copied: {:?}", link);
                                 let mut copied_link = Link::new(
                                     self.next_link_id, 
                                     row, 
@@ -1715,7 +1712,6 @@ impl<'a> TextArea<'a> {
                             },
                         }
                     }
-                    info!("textarea::paste::links AFTER Yank::Piece: {:?}", self.links);
                     self.insert_piece(s, Some(link_copies))
                 } else {
                     self.insert_piece(s, None)
@@ -1729,7 +1725,6 @@ impl<'a> TextArea<'a> {
 
                         match link.deleted {
                             true => {
-                                info!("link was deleted: {:?}", link);
                                 link.deleted = false;
                                 link.edited = true;
                                 link.row = row + yanked_link.row;
@@ -1737,7 +1732,6 @@ impl<'a> TextArea<'a> {
                                 link.end_col = col + yanked_link.end_col;
                             },
                             false => {
-                                info!("link was copied: {:?}", link);
                                 let (start_col_offset, end_col_offset) = if yanked_link.row== 0 {
                                     (col + yanked_link.start_col, col + yanked_link.end_col)
                                 } else {
@@ -1757,7 +1751,6 @@ impl<'a> TextArea<'a> {
                             },
                         }
                     }
-                    info!("textarea::paste::links AFTER Yank::Chunk: {:?}", self.links);
                     self.insert_chunk(c, Some(link_copies))
                 } else {
                     self.insert_chunk(c, None)
@@ -2321,24 +2314,20 @@ impl<'a> TextArea<'a> {
             if l.edited {
                 info!("link edited: {:?}", l);
                 l.edited = false;
-            } else if l.row >= start_row {
-                // EDIT: Changed end_col to start_col
-                info!("link NOT edited: {:?}", l);
-                if l.row == start_row && l.start_col >= start_col {
-                    (l.start_col, l.end_col) = match dcol >= 0 {
-                        true => {
-                            (l.start_col.saturating_add(dcol as usize),
-                            l.end_col.saturating_add(dcol as usize))
-                        },
-                        false => {
-                            let positive_dcol = dcol.unsigned_abs() as usize;
-                            (l.start_col.saturating_sub(positive_dcol),
-                            l.end_col.saturating_sub(positive_dcol))
-                        },
-                    }
-                }
+            } else if l.row == start_row && l.start_col >= start_col {
+                (l.start_col, l.end_col) = match dcol >= 0 {
+                    true => {
+                        (l.start_col.saturating_add(dcol as usize),
+                        l.end_col.saturating_add(dcol as usize))
+                    },
+                    false => {
+                        let positive_dcol = dcol.unsigned_abs() as usize;
+                        (l.start_col.saturating_sub(positive_dcol),
+                        l.end_col.saturating_sub(positive_dcol))
+                    },
+                };
 
-                (l.row) = match drow >= 0 {
+                l.row = match drow >= 0 {
                     true => {
                         l.row.saturating_add(drow as usize)
                     },
@@ -2346,7 +2335,17 @@ impl<'a> TextArea<'a> {
                         let positive_drow = drow.unsigned_abs() as usize;
                         l.row.saturating_sub(positive_drow)
                     },
-                }
+                };
+            } else if l.row > start_row {
+                l.row = match drow >= 0 {
+                    true => {
+                        l.row.saturating_add(drow as usize)
+                    },
+                    false => {
+                        let positive_drow = drow.unsigned_abs() as usize;
+                        l.row.saturating_sub(positive_drow)
+                    },
+                };
             }
             info!("shift_links_after_insert::link AFTER: {:?}", l);
         }
