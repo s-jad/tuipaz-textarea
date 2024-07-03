@@ -72,7 +72,7 @@ impl EditKind {
                     for id in l {
                         let link = links.get_mut(id).expect("link should be present");
                         link.toggle_edited();
-                        link.toggle_deleted();
+                        link.deleted = false;
                     } 
                 }
             }
@@ -86,6 +86,7 @@ impl EditKind {
                 }
             }
             EditKind::InsertChunk((c, link_vec)) => {
+                info!("Inside InsertChunk");
                 debug_assert!(c.len() > 1, "Chunk size must be > 1: {:?}", c);
 
                 // Handle first line of chunk
@@ -103,12 +104,15 @@ impl EditKind {
                 if let Some(l) = link_vec {
                     for id in l {
                         let link = links.get_mut(id).expect("link should be present");
+                        info!("InsertChunk::link: {:?}", link);
                         link.toggle_edited();
-                        link.toggle_deleted();
+                        link.deleted = false;
+                        info!("InsertChunk::link AFTER .toggle_deleted/edited(): {:?}", link);
                     } 
                 }
             }
             EditKind::DeleteChunk((c, link_vec)) => {
+                info!("Inside DeleteChunk");
                 debug_assert!(c.len() > 1, "Chunk size must be > 1: {:?}", c);
                 // Remove middle lines of chunk
                 let mut last_line = lines
@@ -125,7 +129,9 @@ impl EditKind {
                 if let Some(l) = link_vec {
                     for id in l {
                         let link = links.get_mut(id).expect("link should be present");
+                        info!("DeleteChunk::link: {:?}", link);
                         link.toggle_deleted();
+                        info!("DeleteChunk::link AFTER .toggle_deleted(): {:?}", link);
                     } 
                 }
             }
