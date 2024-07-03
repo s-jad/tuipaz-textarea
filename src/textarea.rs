@@ -19,15 +19,7 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use unicode_width::UnicodeWidthChar as _;
 
-#[derive(Debug, Clone, Copy)]
-pub struct YankedLink {
-    id: usize,
-    row_offset: usize,
-    start_col_offset: usize,
-    end_col_offset: usize,
-}
-
-pub type MaybeLinks = Option<Vec<YankedLink>>;
+pub type MaybeLinks = Option<Vec<Link>>;
 
 #[derive(Debug, Clone)]
 enum YankText {
@@ -81,6 +73,7 @@ pub struct TextArea<'a> {
     pub next_link_id: usize,
     pub new_link: bool,
     pub deleted_link_ids: Vec<usize>,
+    pub copied_link_ids: HashMap<usize, usize>,
     tab_len: u8,
     hard_tab_indent: bool,
     history: History,
@@ -229,6 +222,7 @@ impl<'a> TextArea<'a> {
             next_link_id,
             new_link: false,
             deleted_link_ids: vec![],
+            copied_link_ids: HashMap::new(),
             tab_len: 4,
             hard_tab_indent: false,
             history: History::new(50),
@@ -835,7 +829,7 @@ impl<'a> TextArea<'a> {
     /// textarea.insert_str(", world\ngoodbye, world");
     /// assert_eq!(textarea.lines(), ["hello, world", "goodbye, world"]);
     /// ```
-    pub fn insert_str<S: AsRef<str>>(&mut self, s: S, yank_pos: (usize, usize)) -> bool {
+    pub fn insert_str<S: AsRef<str>>(&mut self, s: S, insert_links: MaybeLinks) -> bool {
         let modified = self.delete_selection(false);
         let mut lines: Vec<_> = s
             .as_ref()
@@ -846,12 +840,12 @@ impl<'a> TextArea<'a> {
         info!("insert_str:: lines.len(): {}", lines.len());
         match lines.len() {
             0 => modified,
-            1 => self.insert_piece(lines.remove(0), yank_pos),
-            _ => self.insert_chunk(lines, yank_pos),
+            1 => self.insert_piece(lines.remove(0), insert_links),
+            _ => self.insert_chunk(lines, insert_links),
         }
     }
 
-    fn insert_chunk(&mut self, chunk: Vec<String>, yank_pos: (usize, usize)) -> bool {
+    fn insert_chunk(&mut self, chunk: Vec<String>, insert_links: MaybeLinks) -> bool {
         debug_assert!(chunk.len() > 1, "Chunk size must be > 1: {:?}", chunk);
 
         let (row, col) = self.cursor;
@@ -869,18 +863,22 @@ impl<'a> TextArea<'a> {
             chunk[clen - 1].chars().count(),
         );
         self.cursor = (new_row, new_col);
-        self.shift_links_after_insert((row, col), (new_row, new_col), yank_pos);
+        self.shift_links_after_insert((row, col), (new_row, new_col));
 
         let end_offset = chunk.last().unwrap().len();
+        
+        let inserted_links = insert_links.map(|il| il.into_iter()
+            .map(|l| l.id)
+            .collect::<Vec<usize>>());
 
-        let mut edit = EditKind::InsertChunk((chunk, None));
+        let mut edit = EditKind::InsertChunk((chunk, inserted_links));
         edit.apply(&mut self.lines, &mut self.links, &before, &Pos::new(new_row, new_col, end_offset));
 
         self.push_history(edit, before, end_offset);
         true
     }
 
-    fn insert_piece(&mut self, s: String, insert_pos: (usize, usize)) -> bool {
+    fn insert_piece(&mut self, s: String, insert_links: MaybeLinks) -> bool {
         info!("INSERT PIECE");
         if s.is_empty() {
             return false;
@@ -910,15 +908,14 @@ impl<'a> TextArea<'a> {
         line.insert_str(i, &s);
         info!("line: {}", &line);
         info!("inserting piece\nstart: (row, col): ({}, {})
-            \nend: (row, col): ({}, {})
-            \ninsert_pos: (row, col): ({}, {})",
-            row, col, row, self.cursor.1, insert_pos.0, insert_pos.1
+            \nend: (row, col): ({}, {})",
+            row, col, row, self.cursor.1,
         );
 
         self.cursor.1 += s_len;
         let start_cursor = self.cursor;
 
-        self.shift_links_after_insert((row, col), (row, self.cursor.1), insert_pos);
+        self.shift_links_after_insert((row, col), (row, self.cursor.1));
         info!("self.cursor after move: {:?}", self.cursor);
         if overhang >= 0 {
             let max_col = self.max_col as usize;
@@ -929,7 +926,11 @@ impl<'a> TextArea<'a> {
             };
         } 
 
-        self.push_history(EditKind::InsertStr((s, None)), Pos::new(row, col, i), end_offset);
+        let inserted_links = insert_links.map(|il| il.into_iter()
+            .map(|l| l.id)
+            .collect::<Vec<usize>>());
+
+        self.push_history(EditKind::InsertStr((s, inserted_links)), Pos::new(row, col, i), end_offset);
         true
     }
 
@@ -1064,9 +1065,16 @@ impl<'a> TextArea<'a> {
                             (l.start_col, l.end_col)
                         };
 
-                        YankedLink { id: *id, row_offset, start_col_offset, end_col_offset }
+                        Link { 
+                            id: *id, 
+                            row: row_offset, 
+                            start_col: start_col_offset,
+                            end_col: end_col_offset,
+                            edited: false,
+                            deleted: false 
+                        }
                     })
-                    .collect::<Vec<YankedLink>>();
+                    .collect::<Vec<Link>>();
 
                 let deleted_links = match l.is_empty() {
                     true => None,
@@ -1185,7 +1193,8 @@ impl<'a> TextArea<'a> {
             .map(|c| c.width().unwrap_or(0))
             .sum();
         let len = self.tab_len - (width % self.tab_len as usize) as u8;
-        self.insert_piece(spaces(len).to_string(), (row, col))
+        let edited_links = None;
+        self.insert_piece(spaces(len).to_string(), edited_links)
     }
     
     fn shift_lines_after_insert(&mut self) {
@@ -1316,7 +1325,7 @@ impl<'a> TextArea<'a> {
         info!("prepend_next_line::self.cursor before s.chars().count(): {:?}", self.cursor);
         self.cursor.1 += s.chars().count();
         info!("prepend_next_line::self.cursor after s.chars().count(): {:?}", self.cursor);
-        self.shift_links_after_insert((row, col), (row, self.cursor.1), insert_pos);
+        self.shift_links_after_insert((row, col), (row, self.cursor.1));
         info!("prepend_next_line::self.cursor after shift_links_after_insert: {:?}", self.cursor);
         true
     }
@@ -1670,62 +1679,89 @@ impl<'a> TextArea<'a> {
     /// ```
     pub fn paste(&mut self) -> bool {
         self.delete_selection(false);
+        info!("textarea::paste::links BEFORE: {:?}", self.links);
+        let (row, col) = self.cursor;
         match self.yank.clone() {
-            YankText::Piece((s, l, pos)) => {
-                if let Some(link_ids) = l {
-                    for yanked_link in link_ids {
+            YankText::Piece((s, l, _)) => {
+                let mut link_copies = vec![];
+                if let Some(yanked_links) = l {
+                    for yanked_link in yanked_links.iter() {
                         let link = self.links.get_mut(&yanked_link.id).expect("Link to paste should be in links hashmap");
                         
                         match link.deleted {
                             true => {
+                                info!("link was deleted: {:?}", link);
                                 link.deleted = false;
                                 link.edited = true;
-                                link.row = pos.0 + yanked_link.row_offset;
-                                link.start_col = pos.1 + yanked_link.start_col_offset;
-                                link.end_col = pos.1 + yanked_link.end_col_offset;
+                                link.row = row + yanked_link.row;
+                                link.start_col = col + yanked_link.start_col;
+                                link.end_col = col + yanked_link.end_col;
                             },
                             false => {
-                                let copied_link = Link::new(
+                                info!("link was copied: {:?}", link);
+                                let mut copied_link = Link::new(
                                     self.next_link_id, 
-                                    pos.0 + yanked_link.row_offset, 
-                                    pos.1 + yanked_link.start_col_offset, 
-                                    pos.1 + yanked_link.end_col_offset,
+                                    row, 
+                                    col + yanked_link.start_col, 
+                                    col + yanked_link.end_col,
                                 );
+                                
+                                self.copied_link_ids.insert(copied_link.id, link.id);
+                                link_copies.push(copied_link);
+                                copied_link.edited = true;
+                                copied_link.id = self.next_link_id;
                                 self.links.insert(copied_link.id, copied_link);
                                 self.next_link_id += 1;
                             },
                         }
                     }
+                    info!("textarea::paste::links AFTER Yank::Piece: {:?}", self.links);
+                    self.insert_piece(s, Some(link_copies))
+                } else {
+                    self.insert_piece(s, None)
                 }
-                self.insert_piece(s, pos)
             }
-            YankText::Chunk((c, l, pos)) => {
-                if let Some(link_ids) = l {
-                    for yanked_link in link_ids {
+            YankText::Chunk((c, l, _)) => {
+                let mut link_copies = vec![];
+                if let Some(yanked_links) = l {
+                    for yanked_link in yanked_links.iter() {
                         let link = self.links.get_mut(&yanked_link.id).expect("Link to paste should be in links hashmap");
-                        
+
                         match link.deleted {
                             true => {
+                                info!("link was deleted: {:?}", link);
                                 link.deleted = false;
                                 link.edited = true;
-                                link.row = pos.0 + yanked_link.row_offset;
-                                link.start_col = pos.1 + yanked_link.start_col_offset;
-                                link.end_col = pos.1 + yanked_link.end_col_offset;
+                                link.row = row + yanked_link.row;
+                                link.start_col = col + yanked_link.start_col;
+                                link.end_col = col + yanked_link.end_col;
                             },
                             false => {
-                                let copied_link = Link::new(
+                                info!("link was copied: {:?}", link);
+                                let (start_col_offset, end_col_offset) = if yanked_link.row== 0 {
+                                    (col + yanked_link.start_col, col + yanked_link.end_col)
+                                } else {
+                                    (link.start_col, link.end_col)
+                                };
+                                let mut copied_link = Link::new(
                                     self.next_link_id, 
-                                    pos.0 + yanked_link.row_offset, 
-                                    pos.1 + yanked_link.start_col_offset, 
-                                    pos.1 + yanked_link.end_col_offset,
+                                    row + yanked_link.row, 
+                                    start_col_offset,
+                                    end_col_offset
                                 );
+                                self.copied_link_ids.insert(copied_link.id, link.id);
+                                link_copies.push(copied_link);
+                                copied_link.edited = true;
                                 self.links.insert(copied_link.id, copied_link);
                                 self.next_link_id += 1;
                             },
                         }
                     }
+                    info!("textarea::paste::links AFTER Yank::Chunk: {:?}", self.links);
+                    self.insert_chunk(c, Some(link_copies))
+                } else {
+                    self.insert_chunk(c, None)
                 }
-                self.insert_chunk(c, pos)
             }
         }
     }
@@ -1882,17 +1918,17 @@ impl<'a> TextArea<'a> {
             let l = self.links.iter()
                 .filter(|(_, l)| Self::link_in_range(l, &start, &end))
                 .map(|(id, l)| {
-                    let row_offset = l.row - start.row;
-                    let (start_col_offset, end_col_offset) = if row_offset == 0 {
+                    let row = l.row - start.row;
+                    let (start_col, end_col) = if row == 0 {
                         (l.start_col - start.col, l.end_col - start.col)
                     } else {
                         (l.start_col, l.end_col)
                     };
 
-                    YankedLink { id: *id, row_offset, start_col_offset, end_col_offset }
+                    Link::new(*id, row, start_col, end_col)
                 })
-                .collect::<Vec<YankedLink>>();
-
+                .collect::<Vec<Link>>();
+            
             let links = match l.is_empty() {
                 true => None,
                 false => Some(l),
@@ -1911,7 +1947,6 @@ impl<'a> TextArea<'a> {
                 chunk.push(self.lines[end.row][..end.offset].to_string());
                 self.yank = YankText::Chunk((chunk, links, (start.row, start.col)));
             }
-
         }
     }
 
@@ -2005,6 +2040,7 @@ impl<'a> TextArea<'a> {
     /// ```
     pub fn undo(&mut self) -> bool {
         if let Some((cursor_before, cursor_after)) = self.history.undo(&mut self.lines, &mut self.links) {
+            info!("fn undo::self.links: {:?}", self.links);
             self.cancel_selection();
             self.shift_links_after_edit(cursor_after, cursor_before);
             self.cursor = cursor_before;
@@ -2262,13 +2298,9 @@ impl<'a> TextArea<'a> {
         &mut self,
         (start_row, start_col): (usize, usize),
         (end_row, end_col): (usize, usize),
-        (yank_row, yank_col): (usize, usize),
     ) {
         let drow = end_row as i64 - start_row as i64;
         let dcol = end_col as i64 - start_col as i64;
-
-        let drow_yank = start_row as i64 - yank_row as i64;
-        let dcol_yank = start_col as i64 - yank_col as i64;
 
         info!("SHIFT LINKS AFTER INSERT
             \ncursor: {:?}
@@ -2276,47 +2308,22 @@ impl<'a> TextArea<'a> {
             \n(start_row, end_row): {:?}
             \n(start_col, end_col): {:?}
             \n(drow, dcol): {:?}
-            \n(drow_yank, dcol_yank): {:?}
             ", 
             self.cursor, 
             self.max_col, 
             (start_row, end_row), 
             (start_col, end_col), 
             (drow, dcol),
-            (drow_yank, dcol_yank),
         );
 
         for l in self.links.values_mut().filter(|l| !l.deleted) {
             info!("shift_links_after_insert::link BEFORE: {:?}", l);
             if l.edited {
-                info!("link edited");
-                if l.row == yank_row {
-                    (l.start_col, l.end_col) = match dcol_yank >= 0 {
-                        true => {
-                            (l.start_col.saturating_add(dcol_yank as usize),
-                            l.end_col.saturating_add(dcol_yank as usize))
-                        },
-                        false => {
-                            let positive_dcol_yank = dcol_yank.unsigned_abs() as usize;
-                            (l.start_col.saturating_sub(positive_dcol_yank),
-                            l.end_col.saturating_sub(positive_dcol_yank))
-                        },
-                    };
-                } 
-
-                (l.row) = match drow_yank >= 0 {
-                    true => {
-                        l.row.saturating_add(drow_yank as usize)
-                    },
-                    false => {
-                        let positive_drow_yank = drow_yank.unsigned_abs() as usize;
-                        l.row.saturating_sub(positive_drow_yank)
-                    },
-                };
+                info!("link edited: {:?}", l);
                 l.edited = false;
             } else if l.row >= start_row {
                 // EDIT: Changed end_col to start_col
-                info!("link NOT edited");
+                info!("link NOT edited: {:?}", l);
                 if l.row == start_row && l.start_col >= start_col {
                     (l.start_col, l.end_col) = match dcol >= 0 {
                         true => {
@@ -2445,14 +2452,7 @@ impl<'a> TextArea<'a> {
                     (link.start_col, link.end_col)
                 };
                 
-                
-                let deleted_link = YankedLink {
-                    id: *id,
-                    row_offset,
-                    start_col_offset,
-                    end_col_offset,
-                };
-
+                let deleted_link = Link::new(*id, row_offset, start_col_offset, end_col_offset);
                 deleted_links.push(deleted_link);
             }
         }
