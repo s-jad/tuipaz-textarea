@@ -100,6 +100,10 @@ pub struct TextAreaTheme {
     pub text: Color,
     pub select: Color,
     pub links: Color,
+    pub main_heading: Color,
+    pub main_heading_modifiers: Vec<Modifier>,
+    pub sub_heading: Color,
+    pub sub_heading_modifiers: Vec<Modifier>,
 }
 
 impl Default for TextAreaTheme {
@@ -108,6 +112,10 @@ impl Default for TextAreaTheme {
             text: Color::default(),
             select: Color::Red,
             links: Color::Blue,
+            main_heading: Color::Green,
+            main_heading_modifiers: vec![Modifier::BOLD, Modifier::UNDERLINED],
+            sub_heading: Color::Magenta,
+            sub_heading_modifiers: vec![Modifier::ITALIC],
         }
     }
 }
@@ -184,6 +192,10 @@ impl<'a> Default for TextArea<'a> {
             text: Color::default(),
             select: Color::Magenta,
             links: Color::Blue,
+            main_heading: Color::Green,
+            main_heading_modifiers: vec![Modifier::BOLD, Modifier::UNDERLINED],
+            sub_heading: Color::Magenta,
+            sub_heading_modifiers: vec![Modifier::ITALIC],
         };
 
         Self::new(vec![String::new()], HashMap::new(), 140, theme)
@@ -790,9 +802,9 @@ impl<'a> TextArea<'a> {
         if c == '\n' || c == '\r' {
             self.insert_newline();
             return;
-        } else if c == '[' {
+        } else if c == '[' && !self.lines[self.cursor.0].starts_with('#') {
             self.init_link();
-        } else if c == ']' {
+        } else if c == ']' && !self.lines[self.cursor.0].starts_with('#') {
             self.insert_link();
         } else if self.check_current_row_overhang() {
             self.shift_lines_after_insert();
@@ -3240,15 +3252,22 @@ mod tests {
     use super::*;
     
     const THEME_COLOR: Color = Color::Red;
-    const THEME: TextAreaTheme = TextAreaTheme {
-        text: THEME_COLOR,
-        select: THEME_COLOR,
-        links: THEME_COLOR,
-    };
+
+    fn ta_theme() -> TextAreaTheme {
+        TextAreaTheme {
+            text: THEME_COLOR,
+            select: THEME_COLOR,
+            links: THEME_COLOR,
+            main_heading: THEME_COLOR,
+            main_heading_modifiers: vec![Modifier::BOLD],
+            sub_heading: THEME_COLOR,
+            sub_heading_modifiers: vec![Modifier::BOLD],
+        }
+    }
 
     #[test]
     fn test_delete_piece_includes_link() {
-        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140, THEME);
+        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11, edited: false, deleted: false });
 
         textarea.delete_piece(5, 10);
@@ -3258,7 +3277,7 @@ mod tests {
 
     #[test]
     fn test_delete_entire_link() {
-        let mut textarea = TextArea::new(vec!["[Link]".into()], HashMap::new(), 140, THEME);
+        let mut textarea = TextArea::new(vec!["[Link]".into()], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5, edited: false , deleted: false });
 
         textarea.delete_piece(0, 5);
@@ -3268,7 +3287,7 @@ mod tests {
 
     #[test]
     fn test_delete_part_of_link() {
-        let mut textarea = TextArea::new(vec!["[Example Link]".into()], HashMap::new(), 140, THEME);
+        let mut textarea = TextArea::new(vec!["[Example Link]".into()], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 21, edited: false , deleted: false });
 
         textarea.delete_piece(7, 9);
@@ -3278,7 +3297,7 @@ mod tests {
 
     #[test]
     fn test_links_shift_on_insert_char() {
-        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140, THEME);
+        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(0, 5));
         textarea.insert_char(' ');
@@ -3289,7 +3308,7 @@ mod tests {
 
     #[test]
     fn test_links_shift_on_delete_char() {
-        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140, THEME);
+        let mut textarea = TextArea::new(vec!["Hello [world]!".into()], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 6, end_col: 11, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(0, 5));
         textarea.delete_char();
@@ -3303,7 +3322,7 @@ mod tests {
         let mut textarea = TextArea::new(vec![
             "Line without link.".into(),
             "[Link]".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
 
         textarea.delete_piece(0, 5);
@@ -3315,7 +3334,7 @@ mod tests {
     fn test_deletion_range_does_not_delete_links_but_shifts_it() {
         let mut textarea = TextArea::new(vec![
             "Before [link] and after.".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.delete_piece(0, 6);
@@ -3329,7 +3348,7 @@ mod tests {
         let mut textarea = TextArea::new(vec![
             "[Link]".into(),
             "Some text below.".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(1, 0));
         textarea.insert_newline();
@@ -3348,7 +3367,7 @@ mod tests {
             "Some text above".into(),
             "[Link]".into(),
             "Some text below.".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
 
         textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(2, 0));
@@ -3368,7 +3387,7 @@ mod tests {
             "Some text above".into(),
             "[Link]".into(),
             "Some text below.".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
 
         textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.move_cursor(CursorMove::Jump(2, 0));
@@ -3388,7 +3407,7 @@ mod tests {
     fn test_link_full_row_selection_deletion() {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 0));
@@ -3402,7 +3421,7 @@ mod tests {
     fn test_link_full_link_selection_deletion() {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 7));
@@ -3416,7 +3435,7 @@ mod tests {
     fn test_link_partial_link_selection_deletion() {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 6));
@@ -3430,7 +3449,7 @@ mod tests {
     fn test_link_shift_after_selection_deletion_same_row() {
         let mut textarea = TextArea::new(vec![
             "Before [link] after".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
         textarea.selection_start = Some((0, 0));
@@ -3446,7 +3465,7 @@ mod tests {
             "Text above 1".into(),
             "Text above 2".into(),
             "Before [link] after".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
 
         textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12, edited: false , deleted: false });
 
@@ -3463,7 +3482,7 @@ mod tests {
             "Text above 1".into(),
             "Text above 2".into(),
             "Before [link] after".into()
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
 
         textarea.links.insert(0, Link { id: 0, row: 2, start_col: 7, end_col: 12, edited: false , deleted: false });
 
@@ -3480,7 +3499,7 @@ mod tests {
             "Before [link] after".into(),
             "Text below 1".into(),
             "Text below 2".into(),
-        ], HashMap::new(), 140, THEME);
+        ], HashMap::new(), 140, ta_theme());
 
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 7, end_col: 12, edited: false , deleted: false });
 
@@ -3493,7 +3512,7 @@ mod tests {
 
     #[test]
     fn test_delete_newline_no_links() {
-        let mut textarea = TextArea::new(vec!["Line 1".into(), "Line 2".into()], HashMap::new(), 140, THEME);
+        let mut textarea = TextArea::new(vec!["Line 1".into(), "Line 2".into()], HashMap::new(), 140, ta_theme());
         textarea.cursor = (1, 0);
 
         assert!(textarea.delete_newline());
@@ -3502,7 +3521,7 @@ mod tests {
 
     #[test]
     fn test_delete_newline_with_links_next_line() {
-        let mut textarea = TextArea::new(vec!["Line 1".into(), "[Link]".into()], HashMap::new(), 140, THEME);
+        let mut textarea = TextArea::new(vec!["Line 1".into(), "[Link]".into()], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 1, start_col: 0, end_col: 5, edited: false , deleted: false });
         textarea.cursor = (1, 0);
 
@@ -3513,7 +3532,7 @@ mod tests {
 
     #[test]
     fn test_delete_newline_with_links_both_lines() {
-        let mut textarea = TextArea::new(vec!["[Link1]".into(), "[Link2]".into()], HashMap::new(), 140, THEME);
+        let mut textarea = TextArea::new(vec!["[Link1]".into(), "[Link2]".into()], HashMap::new(), 140, ta_theme());
         textarea.links.insert(0, Link { id: 0, row: 0, start_col: 0, end_col: 6, edited: false , deleted: false });
         textarea.links.insert(1, Link { id: 1, row: 1, start_col: 0, end_col: 6, edited: false , deleted: false });
         textarea.cursor = (1, 0);
