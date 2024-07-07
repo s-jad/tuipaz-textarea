@@ -3,6 +3,8 @@ use crate::ratatui::style::Style;
 use crate::ratatui::text::Span;
 use crate::util::{num_digits, spaces};
 use log::info;
+use ratatui::layout::Alignment;
+use ratatui::style::{Stylize, Modifier, Color};
 #[cfg(feature = "ratatui")]
 use ratatui::text::Line;
 use std::borrow::Cow;
@@ -18,6 +20,8 @@ enum Boundary {
     Select(Style),
     Search(Style),
     Hop((Style, usize)),
+    Title(Style),
+    Subtitle(Style),
     End,
 }
 
@@ -30,6 +34,8 @@ impl Boundary {
                 Boundary::Hop(_) => 3,
                 Boundary::Select(_) => 2,
                 Boundary::Link(_) => 1,
+                Boundary::Title(_) => 1,
+                Boundary::Subtitle(_) => 1,
                 Boundary::End => 0,
             }
         }
@@ -43,6 +49,8 @@ impl Boundary {
             Boundary::Select(s) => Some(*s),
             Boundary::Search(s) => Some(*s),
             Boundary::Hop((s, _)) => Some(*s),
+            Boundary::Title(s) => Some(*s),
+            Boundary::Subtitle(s) => Some(*s),
             Boundary::End => None,
         }
     }
@@ -260,6 +268,29 @@ impl<'a> LineHighlighter<'a> {
         } = self;
         let mut builder = DisplayTextBuilder::new(tab_len, mask, None);
 
+        let (line, alignment, line_style) = if line.starts_with("##") {
+            (
+                line.strip_prefix("##").expect("line starts with '##'"),
+                Alignment::Left,
+                Style::default().fg(Color::Blue).add_modifier(Modifier::ITALIC),
+            )
+        } else if line.starts_with('#') {
+            (
+                line.strip_prefix('#').expect("line starts with '#'"),
+                Alignment::Center,
+                Style::default()
+                    .fg(Color::Red)
+                    .add_modifier(Modifier::UNDERLINED)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            (
+                line, 
+                Alignment::Left,
+                Style::default(),
+            )
+        };
+
         if boundaries.is_empty() {
             let built = builder.build(line);
             if !built.is_empty() {
@@ -270,7 +301,7 @@ impl<'a> LineHighlighter<'a> {
             } else if select_at_end {
                 spans.push(Span::styled(" ", select_style));
             }
-            return Line::from(spans);
+            return Line::from(spans).alignment(alignment).style(line_style);
         }
 
         boundaries.sort_unstable_by(|(l, i), (r, j)| match i.cmp(j) {
@@ -316,7 +347,10 @@ impl<'a> LineHighlighter<'a> {
             spans.push(Span::styled(" ", select_style));
         }
 
-        Line::from(spans)
+        info!("line: {:?}", line);
+        info!("alignment: {:?}", alignment);
+        info!("style: {:?}", style);
+        Line::from(spans).alignment(alignment).style(line_style)
     }
 }
 
